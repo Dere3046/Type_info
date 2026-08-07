@@ -1,0 +1,34 @@
+# build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.a
+*.so
+*.cmd
+*.symvers
+*.order
+*.lds
+*.lto.o
+Module.symvers
+modules.order
+modules.builtin
+out/
+
+# initramfs
+
+# editor
+*.swp
+.idea/
+.vscode/
+*.symversions
+type_info.o.symversions
+*.o.d
+
+# LTO artifacts
+*.lto.o
+
+# untracked refs
+kallrecon/
+.ddk-version
