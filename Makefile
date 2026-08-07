@@ -1,6 +1,5 @@
-obj-m := type_info.o testmod.o
+obj-m := type_info.o
 type_info-objs := lib/btf.o lib/query.o lib/lib.o lib/anchor.o src/main.o src/verify.o kallrecon/lib/core.o kallrecon/lib/slide.o kallrecon/lib/anchor.o
-testmod-objs := test/testmod.o kallrecon/lib/anchor.o
 
 ccflags-y += -std=gnu11
 ccflags-y += -Wno-declaration-after-statement
