@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (C) 2026 dere3046
+ */
+
+#ifndef TYPEMOD_SLIDE_H
+#define TYPEMOD_SLIDE_H
+
+#include <linux/types.h>
+
+extern unsigned int slide_buf[];
+
+struct slide_win {
+	unsigned long addr;
+	unsigned int  chunksz;
+	unsigned int  margin;
+	unsigned int  off;
+};
+
+int slide_init(struct slide_win *w, unsigned long pos,
+		  unsigned int chunksz, unsigned int margin);
+int slide_advance(struct slide_win *w, unsigned int n);
+
+static inline void *slide_ptr(const struct slide_win *w, const void *buf)
+{
+	return (unsigned char *)buf + w->off;
+}
+
+static inline unsigned long slide_addr(const struct slide_win *w)
+{
+	return w->addr + w->off;
+}
+
+#endif

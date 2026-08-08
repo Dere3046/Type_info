@@ -27,9 +27,19 @@ struct ti_boot_args {
 	pid_t ref_tgid;
 };
 
-void ti_anchor_set_resolver(unsigned long (*resolve)(const char *name));
+struct ti_module_offs {
+	u32 off_list;
+	u32 off_name;
+	u32 off_state;
+	u32 off_core_base;
+	u32 off_core_size;
+	u32 off_btf_data;
+	u32 off_btf_data_size;
+	u32 off_btf_base_data;
+	u32 off_btf_base_data_size;
+};
 
-void *ti_current(void);
+void ti_anchor_init(unsigned long (*resolve)(const char *name));
 
 int ti_scan_bytes(const void *base, u32 range, const void *sample, u32 len,
 		  u32 *off);
@@ -38,5 +48,6 @@ int ti_scan_ptrpair(const void *base, u32 range, u32 *off);
 int ti_scan_ptrpair_rev(const void *base, u32 range, u32 *off);
 
 int ti_bootstrap_task(const struct ti_boot_args *args, struct ti_task_offs *out);
+int ti_bootstrap_module(struct ti_module_offs *out);
 
 #endif

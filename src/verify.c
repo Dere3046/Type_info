@@ -15,7 +15,9 @@
 #include "lib.h"
 #include "type_info.h"
 #include "anchor.h"
-#include "../test/testmod.h"
+#include "port.h"
+#include "verify.h"
+#include "reg.h"
 
 static int vfails;
 
@@ -338,6 +340,41 @@ static void verify_kernel(const struct ti_ctx *base)
 	CHECK(ti_type_size(base, id) == sizeof(struct task_struct),
 	      "[type_info] task_struct size btf=%u compile=%zu\n",
 	      ti_type_size(base, id), sizeof(struct task_struct));
+
+	/* member enumeration cross-check */
+	{
+		static const char *const want[] = { "pid", "comm", "tasks",
+						    "mm" };
+		u32 found[ARRAY_SIZE(want)] = { 0 };
+		int cnt = ti_member_count(base, id);
+		int i;
+		int j;
+
+		CHECK(cnt > 0, "[type_info] task_struct member count=%d\n",
+		      cnt);
+		for (i = 0; i < cnt && i < 4096; i++) {
+			const char *mname = NULL;
+
+			ret = ti_member_at(base, id, i, &mname, NULL, &bit_off,
+					   &bit_sz);
+			if (ret)
+				break;
+			for (j = 0; j < (int)ARRAY_SIZE(want); j++)
+				if (mname && !strcmp(mname, want[j]))
+					found[j] = bit_off / 8;
+		}
+		CHECK(found[0] == offsetof(struct task_struct, pid) &&
+		      found[1] == offsetof(struct task_struct, comm) &&
+		      found[2] == offsetof(struct task_struct, tasks) &&
+		      found[3] == offsetof(struct task_struct, mm),
+		      "[type_info] task_struct enum pid=%u comm=%u tasks=%u "
+		      "mm=%u (compile %zu/%zu/%zu/%zu)\n", found[0],
+		      found[1], found[2], found[3],
+		      offsetof(struct task_struct, pid),
+		      offsetof(struct task_struct, comm),
+		      offsetof(struct task_struct, tasks),
+		      offsetof(struct task_struct, mm));
+	}
 }
 
 static void verify_mod_cfg_struct(const struct ti_ctx *c)
@@ -459,25 +496,115 @@ static void verify_mod_cfg(const struct ti_ctx *c)
 	      "[type_info] mod: bits.rest off=%u sz=%u\n", bit_off, bit_sz);
 }
 
-int ti_verify_mods(void)
+static int enum_cb(const struct ti_module *m, void *arg)
 {
-	struct ti_ctx *mc;
+	unsigned int *n = arg;
+
+	pr_info("[type_info] enum: %-20s state=%u base=%px size=%lu\n",
+		m->name, m->state, (void *)m->core_base, m->core_size);
+	(*n)++;
+	return 0;
+}
+
+static void verify_mod_enum(void)
+{
+	unsigned int n = 0;
 	int ret;
 
+	ret = ti_mod_enum(enum_cb, &n);
+	pr_info("[type_info] mod enum: %u modules (%d)\n", n, ret);
+}
+
+void ti_verify_enum(void)
+{
+	verify_mod_enum();
+}
+
+void ti_verify_reg(void)
+{
+	static const struct {
+		const char *name;
+		u32 bit_off;
+		u32 bit_sz;
+	} want[] = {
+		{ "magic", offsetof(struct ti_test_cfg, magic) * 8, 0 },
+		{ "flags", offsetof(struct ti_test_cfg, flags) * 8, 0 },
+		{ "mode", offsetof(struct ti_test_cfg, mode) * 8, 0 },
+		{ "prio", offsetof(struct ti_test_cfg, prio) * 8, 0 },
+		{ "seq", offsetof(struct ti_test_cfg, seq) * 8, 0 },
+		{ "tag", offsetof(struct ti_test_cfg, tag) * 8, 0 },
+		{ "bits", offsetof(struct ti_test_cfg, bits) * 8, 0 },
+		{ "a", 0, 3 },
+		{ "b", 3, 5 },
+		{ "rest", 32, 0 },
+	};
+	u32 id;
+	u32 bit_off;
+	u32 bit_sz;
+	int ret;
+	int n;
+	int i;
+
 	vfails = 0;
-	ret = ti_mod_lookup("testmod", &mc);
+	ret = ti_type_by_name(ti_base(), "ti_test_cfg", BIT(BTF_KIND_STRUCT),
+			      &id);
 	if (ret) {
-		pr_info("[type_info] mod: testmod not captured (%d), "
-			"module may have no btf\n", ret);
-		return 0;
+		pr_info("[type_info] reg: ti_test_cfg not registered (%d)\n",
+			ret);
+		return;
+	}
+	CHECK(id >= TI_REG_ID_BASE,
+	      "[type_info] reg: id=%u not synthetic\n", id);
+	CHECK(ti_type_size(ti_base(), id) == sizeof(struct ti_test_cfg),
+	      "[type_info] reg: size=%u compile=%zu\n",
+	      ti_type_size(ti_base(), id), sizeof(struct ti_test_cfg));
+	CHECK(!ti_member_off(ti_base(), id, "magic", &bit_off, &bit_sz) &&
+	      bit_off == offsetof(struct ti_test_cfg, magic) * 8 && !bit_sz,
+	      "[type_info] reg: magic off=%u\n", bit_off);
+	CHECK(!ti_member_off(ti_base(), id, "seq", &bit_off, &bit_sz) &&
+	      bit_off == offsetof(struct ti_test_cfg, seq) * 8 && !bit_sz,
+	      "[type_info] reg: seq off=%u\n", bit_off);
+	CHECK(!ti_member_off(ti_base(), id, "bits", &bit_off, &bit_sz) &&
+	      bit_off == offsetof(struct ti_test_cfg, bits) * 8 && !bit_sz,
+	      "[type_info] reg: bits off=%u\n", bit_off);
+	CHECK(!ti_member_off(ti_base(), id, "a", &bit_off, &bit_sz) &&
+	      bit_off == 0 && bit_sz == 3,
+	      "[type_info] reg: a off=%u sz=%u\n", bit_off, bit_sz);
+	CHECK(!ti_member_off(ti_base(), id, "b", &bit_off, &bit_sz) &&
+	      bit_off == 3 && bit_sz == 5,
+	      "[type_info] reg: b off=%u sz=%u\n", bit_off, bit_sz);
+
+	n = ti_member_count(ti_base(), id);
+	CHECK(n == (int)ARRAY_SIZE(want),
+	      "[type_info] reg: count=%d want=%zu\n", n,
+	      ARRAY_SIZE(want));
+	for (i = 0; i < n && i < (int)ARRAY_SIZE(want); i++) {
+		const char *name = NULL;
+		u32 type = 0;
+
+		ret = ti_member_at(ti_base(), id, i, &name, &type, &bit_off,
+				   &bit_sz);
+		CHECK(!ret && name && !strcmp(name, want[i].name) &&
+		      bit_off == want[i].bit_off && bit_sz == want[i].bit_sz,
+		      "[type_info] reg: member[%d] %s off=%u sz=%u type=%u "
+		      "(ret=%d)\n", i, name ? name : "?", bit_off, bit_sz,
+		      type, ret);
 	}
 
+	pr_info("[type_info] reg verify done, %d fail%s\n", vfails,
+		vfails == 1 ? "" : "s");
+}
+
+void ti_verify_captured(const struct ti_ctx *mc)
+{
+	vfails = 0;
+	if (strcmp(mc->name, "testmod"))
+		return;
 	verify_mod_cfg(mc);
 	pr_info("[type_info] mod verify done, %d fail%s\n", vfails,
 		vfails == 1 ? "" : "s");
-	return vfails;
+	verify_mod_enum();
 }
-EXPORT_SYMBOL(ti_verify_mods);
 
 extern int ti_cur_pid;
 extern int ti_ref_pid;
@@ -548,6 +675,7 @@ int verify_ti(void)
 		verify_mod_cfg(mc);
 	else
 		pr_info("[type_info] testmod not captured yet\n");
+	verify_mod_enum();
 
 	pr_info("[type_info] verify done, %d fail%s\n", vfails,
 		vfails == 1 ? "" : "s");

@@ -1,34 +1,17 @@
-# build artifacts
-*.o
 *.ko
+*.o
 *.mod
-*.mod.c
 *.mod.o
-*.a
-*.so
-*.cmd
+*.mod.c
 *.symvers
 *.order
+.*.cmd
 *.lds
-*.lto.o
-Module.symvers
-modules.order
-modules.builtin
-out/
-
-# initramfs
-
-# editor
-*.swp
-.idea/
-.vscode/
 *.symversions
-type_info.o.symversions
-*.o.d
-
-# LTO artifacts
-*.lto.o
-
-# untracked refs
+.tmp_versions/
+Module.markers
+modules.order
+Module.symvers
+out/
 kallrecon/
 .ddk-version

@@ -17,6 +17,11 @@
 #include "lib.h"
 #include "type_info.h"
 #include "anchor.h"
+#include "port.h"
+#include "reg.h"
+
+extern int ti_mod_anchor;
+extern int ti_btf_mode;
 
 struct ti_mod_ent {
 	char name[MODULE_NAME_LEN];
@@ -35,14 +40,11 @@ static struct ti_mod_ent *ti_mods;
 static u32 ti_mod_cnt;
 static u32 ti_mod_cap;
 
-static u32 ti_m_data_off;
-static u32 ti_m_data_sz_off;
-static u32 ti_m_bdata_off;
-static u32 ti_m_bdata_sz_off;
+static struct ti_module_offs ti_m_offs;
 static bool ti_m_offs_ok;
-static bool ti_m_has_bdata;
 static unsigned long ti_nb_register;
 static unsigned long ti_nb_unregister;
+static unsigned long ti_mods_addr;
 
 static __nocfi struct module *ti_call_find_module(unsigned long fn,
 						  const char *name)
@@ -74,6 +76,11 @@ u32 ti_type_count(void)
 	return ti_base_ctx.cur.type_cnt;
 }
 
+bool ti_btf_available(void)
+{
+	return ti_ready && ti_base_ctx.cur.type_cnt != 0;
+}
+
 static void *ti_blob_dup(const void *src, u32 size)
 {
 	void *p;
@@ -96,7 +103,7 @@ static void ti_mod_ent_free(struct ti_mod_ent *e)
 	ti_ctx_close(e->ctx);
 	vfree(e->mid_blob);
 	vfree(e->blob);
-	kfree(e);
+	memset(e, 0, sizeof(*e));
 }
 
 static void ti_mod_ent_add(struct ti_mod_ent *e)
@@ -155,10 +162,18 @@ static int ti_mod_capture(struct module *mod)
 	void *mid_blob = NULL;
 	int ret;
 
-	dptr = *(unsigned long *)((char *)mod + ti_m_data_off);
-	dsize = *(unsigned int *)((char *)mod + ti_m_data_sz_off);
-	if (!dptr || !dsize)
+	if (!ti_m_offs_ok)
 		return 0;
+	if (!ti_m_offs.off_btf_data || !ti_m_offs.off_btf_data_size)
+		return 0;
+
+	dptr = *(unsigned long *)((char *)mod + ti_m_offs.off_btf_data);
+	dsize = *(unsigned int *)((char *)mod + ti_m_offs.off_btf_data_size);
+	if (!dptr || !dsize) {
+		pr_info("[type_info] module %s no btf data\n", mod->name);
+		ti_verify_enum();
+		return 0;
+	}
 
 	blob = ti_blob_dup((const void *)dptr, dsize);
 	if (!blob)
@@ -171,12 +186,15 @@ static int ti_mod_capture(struct module *mod)
 	}
 	strscpy(mc->name, mod->name, sizeof(mc->name));
 
-	if (ti_m_has_bdata) {
+	if (ti_btf_mode != TI_BTF_STANDALONE &&
+	    ti_m_offs.off_btf_base_data && ti_m_offs.off_btf_base_data_size) {
 		unsigned long bptr;
 		unsigned int bsize;
 
-		bptr = *(unsigned long *)((char *)mod + ti_m_bdata_off);
-		bsize = *(unsigned int *)((char *)mod + ti_m_bdata_sz_off);
+		bptr = *(unsigned long *)((char *)mod +
+					  ti_m_offs.off_btf_base_data);
+		bsize = *(unsigned int *)((char *)mod +
+					  ti_m_offs.off_btf_base_data_size);
 		if (bptr && bsize) {
 			mid_blob = ti_blob_dup((const void *)bptr, bsize);
 			if (mid_blob) {
@@ -200,7 +218,16 @@ static int ti_mod_capture(struct module *mod)
 			}
 		}
 	}
-	if (!mc->base)
+	if (ti_btf_mode == TI_BTF_DISTILLED && !mc->base) {
+		pr_warn("[type_info] module %s no distilled base, "
+			"capture skipped\n", mod->name);
+		ti_ctx_close(mid);
+		vfree(mid_blob);
+		kfree(mc);
+		vfree(blob);
+		return 0;
+	}
+	if (ti_btf_mode != TI_BTF_STANDALONE && !mc->base)
 		mc->base = &ti_base_ctx;
 
 	ret = ti_ctx_init(mc, blob, dsize);
@@ -222,6 +249,7 @@ static int ti_mod_capture(struct module *mod)
 	ti_mod_ent_add(&ent);
 	pr_info("[type_info] module %s btf captured: %u types\n", mod->name,
 		mc->cur.type_cnt);
+	ti_verify_captured(mc);
 	return 0;
 }
 
@@ -230,20 +258,36 @@ static int ti_mod_notify(struct notifier_block *nb, unsigned long ev,
 {
 	struct module *mod = data;
 
-	if (!ti_m_offs_ok)
-		return NOTIFY_DONE;
 	if (ev == MODULE_STATE_COMING)
 		ti_mod_capture(mod);
+	else if (ev == MODULE_STATE_LIVE)
+		ti_verify_reg();
 	else if (ev == MODULE_STATE_GOING)
 		ti_mod_ent_del(mod->name);
 	return NOTIFY_DONE;
 }
 
+static int ti_m_offs_field(u32 mod_id, const char *field, u32 *out)
+{
+	u32 bit_off;
+	u32 bit_sz;
+
+	if (ti_member_off(&ti_base_ctx, mod_id, field, &bit_off, &bit_sz))
+		return -ENOENT;
+	if (bit_sz)
+		return -ENOENT;
+	*out = bit_off / 8;
+	return 0;
+}
+
 static int ti_mod_offs_init(void)
 {
 	u32 mod_id;
+	u32 cl_id;
 	u32 bit_off;
 	u32 bit_sz;
+	u32 cl_off;
+	u32 b_off;
 	int ret;
 
 	ret = ti_type_by_name(&ti_base_ctx, "module", BIT(BTF_KIND_STRUCT),
@@ -251,31 +295,47 @@ static int ti_mod_offs_init(void)
 	if (ret)
 		return ret;
 
-	ret = ti_member_off(&ti_base_ctx, mod_id, "btf_data", &bit_off,
-			    &bit_sz);
-	if (ret || bit_sz)
+	ret = ti_m_offs_field(mod_id, "btf_data", &ti_m_offs.off_btf_data);
+	if (ret)
 		return -ENOTSUPP;
-	ti_m_data_off = bit_off / 8;
-
-	ret = ti_member_off(&ti_base_ctx, mod_id, "btf_data_size", &bit_off,
-			    &bit_sz);
-	if (ret || bit_sz)
+	ret = ti_m_offs_field(mod_id, "btf_data_size",
+			      &ti_m_offs.off_btf_data_size);
+	if (ret)
 		return -ENOTSUPP;
-	ti_m_data_sz_off = bit_off / 8;
 
-	ti_m_has_bdata = !ti_member_off(&ti_base_ctx, mod_id, "btf_base_data",
-					&bit_off, &bit_sz) && !bit_sz;
-	if (ti_m_has_bdata) {
-		ti_m_bdata_off = bit_off / 8;
-		ret = ti_member_off(&ti_base_ctx, mod_id, "btf_base_data_size",
-				    &bit_off, &bit_sz);
-		if (ret || bit_sz) {
-			ti_m_has_bdata = false;
-		} else {
-			ti_m_bdata_sz_off = bit_off / 8;
+	if (!ti_m_offs_field(mod_id, "btf_base_data",
+			     &ti_m_offs.off_btf_base_data))
+		if (ti_m_offs_field(mod_id, "btf_base_data_size",
+				    &ti_m_offs.off_btf_base_data_size))
+			ti_m_offs.off_btf_base_data = 0;
+
+	if (ti_m_offs_field(mod_id, "list", &ti_m_offs.off_list))
+		return -ENOTSUPP;
+	if (ti_m_offs_field(mod_id, "name", &ti_m_offs.off_name))
+		return -ENOTSUPP;
+	if (ti_m_offs_field(mod_id, "state", &ti_m_offs.off_state))
+		return -ENOTSUPP;
+
+	cl_off = 0;
+	if (!ti_member_off(&ti_base_ctx, mod_id, "core_layout", &bit_off,
+			   &bit_sz) && !bit_sz) {
+		cl_off = bit_off / 8;
+		if (!ti_type_by_name(&ti_base_ctx, "module_layout",
+				     BIT(BTF_KIND_STRUCT), &cl_id)) {
+			if (!ti_m_offs_field(cl_id, "base", &b_off))
+				ti_m_offs.off_core_base = cl_off + b_off;
+			if (!ti_m_offs_field(cl_id, "size", &b_off))
+				ti_m_offs.off_core_size = cl_off + b_off;
 		}
 	}
-	ti_m_offs_ok = true;
+
+	pr_info("[type_info] module btf offsets: list=%u name=%u state=%u "
+		"core=%u/%u btf=%u/%u base=%u/%u\n", ti_m_offs.off_list,
+		ti_m_offs.off_name, ti_m_offs.off_state,
+		ti_m_offs.off_core_base, ti_m_offs.off_core_size,
+		ti_m_offs.off_btf_data, ti_m_offs.off_btf_data_size,
+		ti_m_offs.off_btf_base_data,
+		ti_m_offs.off_btf_base_data_size);
 	return 0;
 }
 
@@ -289,25 +349,42 @@ int ti_init(struct ti_resolver *res)
 	if (!res || !res->name_to_addr)
 		return -EINVAL;
 	ti_res = *res;
-	ti_anchor_set_resolver(ti_res.name_to_addr);
+	ti_anchor_init(ti_res.name_to_addr);
+	ti_reg_init();
+
+	mutex_init(&ti_mod_lock);
+	ti_mod_nb.notifier_call = ti_mod_notify;
+	ti_mods_addr = ti_res.name_to_addr("modules");
 
 	start = ti_res.name_to_addr("__start_BTF");
 	stop = ti_res.name_to_addr("__stop_BTF");
-	if (!start || !stop || stop <= start)
-		return -ENOTSUPP;
-	size = stop - start;
-
-	ret = ti_ctx_init(&ti_base_ctx, (const void *)start, size);
-	if (ret)
-		return -ENOTSUPP;
-	strscpy(ti_base_ctx.name, "vmlinux", sizeof(ti_base_ctx.name));
+	if (start && stop && stop > start) {
+		size = stop - start;
+		ret = ti_ctx_init(&ti_base_ctx, (const void *)start, size);
+		if (!ret) {
+			strscpy(ti_base_ctx.name, "vmlinux",
+				sizeof(ti_base_ctx.name));
+			pr_info("[type_info] vmlinux btf ready, %u types\n",
+				ti_base_ctx.cur.type_cnt);
+		} else {
+			pr_warn("[type_info] vmlinux btf parse failed: %d\n",
+				ret);
+		}
+	} else {
+		pr_info("[type_info] vmlinux btf unavailable\n");
+	}
 	ti_ready = true;
 
-	mutex_init(&ti_mod_lock);
-	ti_mod_offs_init();
+	if (ti_mod_anchor || !ti_btf_available() || ti_mod_offs_init()) {
+		memset(&ti_m_offs, 0, sizeof(ti_m_offs));
+		if (ti_bootstrap_module(&ti_m_offs))
+			pr_warn("[type_info] module anchor bootstrap failed\n");
+	}
+	if (ti_m_offs.off_list && ti_m_offs.off_name)
+		ti_m_offs_ok = true;
+
 	ti_nb_register = ti_res.name_to_addr("register_module_notifier");
 	ti_nb_unregister = ti_res.name_to_addr("unregister_module_notifier");
-	ti_mod_nb.notifier_call = ti_mod_notify;
 	if (ti_nb_register && ti_nb_unregister) {
 		if (ti_call_register_nb(ti_nb_register, &ti_mod_nb))
 			pr_warn("[type_info] module notifier register failed\n");
@@ -334,7 +411,9 @@ void ti_exit(void)
 	ti_mod_cnt = 0;
 	ti_mod_cap = 0;
 	mutex_unlock(&ti_mod_lock);
-	ti_ctx_close(&ti_base_ctx);
+	vfree(ti_base_ctx.name_map);
+	btf_close(&ti_base_ctx.cur);
+	memset(&ti_base_ctx, 0, sizeof(ti_base_ctx));
 	ti_ready = false;
 }
 
@@ -355,5 +434,52 @@ int ti_mod_lookup(const char *name, struct ti_ctx **out)
 		break;
 	}
 	mutex_unlock(&ti_mod_lock);
+	return ret;
+}
+
+int ti_mod_enum(int (*cb)(const struct ti_module *m, void *arg), void *arg)
+{
+	unsigned long cur;
+	u32 i = 0;
+	int ret = 0;
+
+	if (!cb || !ti_m_offs_ok || !ti_m_offs.off_list ||
+	    !ti_m_offs.off_name)
+		return -ENOENT;
+	if (!ti_mods_addr)
+		return -ENOENT;
+
+	if (ti_safe_read(&cur, (void *)ti_mods_addr, 8))
+		return -ENOENT;
+
+	while (cur && cur != ti_mods_addr && i < 512) {
+		unsigned long base = cur - ti_m_offs.off_list;
+		struct ti_module m;
+
+		memset(&m, 0, sizeof(m));
+		m.mod = (void *)base;
+		m.name = (const char *)base + ti_m_offs.off_name;
+		if (ti_m_offs.off_state) {
+			if (ti_safe_read(&m.state, (void *)(base +
+					   ti_m_offs.off_state), 4))
+				break;
+		}
+		if (ti_m_offs.off_core_base && ti_m_offs.off_core_size) {
+			if (ti_safe_read(&m.core_base,
+					 (void *)(base +
+						  ti_m_offs.off_core_base), 8))
+				break;
+			if (ti_safe_read(&m.core_size,
+					 (void *)(base +
+						  ti_m_offs.off_core_size), 4))
+				break;
+		}
+		ret = cb(&m, arg);
+		if (ret)
+			break;
+		if (ti_safe_read(&cur, (void *)cur, 8))
+			break;
+		i++;
+	}
 	return ret;
 }

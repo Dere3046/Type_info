@@ -14,9 +14,25 @@ struct ti_resolver {
 
 struct ti_ctx;
 
+enum ti_btf_mode {
+	TI_BTF_AUTO = 0,
+	TI_BTF_DISTILLED = 1,
+	TI_BTF_SPLIT = 2,
+	TI_BTF_STANDALONE = 3,
+};
+
+struct ti_module {
+	const char *name;
+	unsigned int state;
+	unsigned long core_base;
+	unsigned long core_size;
+	void *mod;
+};
+
 int ti_init(struct ti_resolver *res);
 void ti_exit(void);
 struct ti_ctx *ti_base(void);
+bool ti_btf_available(void);
 u32 ti_type_count(void);
 
 int ti_ctx_open(const void *blob, u32 size, struct ti_ctx **out);
@@ -30,8 +46,30 @@ int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
 		  u32 *bit_off, u32 *bit_sz);
 int ti_member_info(const struct ti_ctx *ctx, u32 id, const char *member,
 		   u32 *type, u32 *bit_off, u32 *bit_sz);
+int ti_member_count(const struct ti_ctx *ctx, u32 id);
+int ti_member_at(const struct ti_ctx *ctx, u32 id, u32 idx,
+		 const char **name, u32 *type, u32 *bit_off, u32 *bit_sz);
 
 int ti_mod_lookup(const char *name, struct ti_ctx **out);
-int ti_verify_mods(void);
+int ti_mod_enum(int (*cb)(const struct ti_module *m, void *arg), void *arg);
+
+struct ti_member_desc {
+	const char *name;
+	u32 bit_off;
+	u32 bit_sz;
+};
+
+int ti_reg_struct(const char *name, u32 size,
+		  const struct ti_member_desc *members, u32 n);
+void ti_unreg_struct(const char *name);
+
+#ifdef CONFIG_TI_PUBLIC_ANCHOR
+int ti_safe_read(void *dst, const void *src, size_t sz);
+int ti_scan_bytes(const void *base, u32 range, const void *sample, u32 len,
+		  u32 *off);
+int ti_scan_u32(const void *base, u32 range, u32 val, u32 *off);
+int ti_scan_ptrpair(const void *base, u32 range, u32 *off);
+int ti_scan_ptrpair_rev(const void *base, u32 range, u32 *off);
+#endif
 
 #endif

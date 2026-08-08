@@ -12,6 +12,7 @@
 #include "btf.h"
 #include "lib.h"
 #include "type_info.h"
+#include "reg.h"
 
 static const struct ti_ctx *q_ctx;
 
@@ -207,8 +208,17 @@ int ti_type_by_name(const struct ti_ctx *ctx, const char *name,
 	q_ctx = ctx;
 	hit = ns_bsearch(name, ctx->name_map, ctx->name_cnt);
 	q_ctx = NULL;
-	if (!hit)
-		return -ENOENT;
+	if (!hit) {
+		int idx;
+
+		if (kind_mask && !(kind_mask & BIT(BTF_KIND_STRUCT)))
+			return -ENOENT;
+		idx = ti_reg_lookup(name);
+		if (idx < 0)
+			return -ENOENT;
+		*out = ti_reg_idx_to_id(idx);
+		return 0;
+	}
 
 	i = hit - ctx->name_map;
 	while (i > 0 &&
@@ -231,6 +241,11 @@ u32 ti_type_size(const struct ti_ctx *ctx, u32 id)
 {
 	const struct btf_type *t;
 	u32 kind;
+	int idx;
+
+	idx = ti_reg_id_to_idx(id);
+	if (idx >= 0)
+		return ti_reg_size(idx);
 
 	t = ctx_type(ctx, id);
 	if (!t)
@@ -255,6 +270,11 @@ int ti_follow(const struct ti_ctx *ctx, u32 id, u32 *out)
 	u32 cur = id;
 	int depth = 0;
 
+	if (ti_reg_id_to_idx(id) >= 0) {
+		*out = id;
+		return 0;
+	}
+
 	while (cur) {
 		const struct btf_type *t = ctx_type(ctx, cur);
 		u32 kind;
@@ -276,6 +296,83 @@ int ti_follow(const struct ti_ctx *ctx, u32 id, u32 *out)
 	return 0;
 }
 
+int ti_member_count(const struct ti_ctx *ctx, u32 id)
+{
+	const struct btf_type *t;
+	u32 kind;
+	int ret;
+	int idx;
+
+	if (!ctx)
+		return -EINVAL;
+
+	idx = ti_reg_id_to_idx(id);
+	if (idx >= 0)
+		return ti_reg_mem_count(idx);
+
+	ret = ti_follow(ctx, id, &id);
+	if (ret)
+		return ret;
+
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+		return -EINVAL;
+	return BTF_INFO_VLEN(t->info);
+}
+
+int ti_member_at(const struct ti_ctx *ctx, u32 id, u32 idx,
+		 const char **name, u32 *type, u32 *bit_off, u32 *bit_sz)
+{
+	const struct btf_type *t;
+	const struct btf_member *m;
+	u32 kind;
+	u32 vlen;
+	int ret;
+	int ridx;
+
+	if (!ctx || !name || !bit_off || !bit_sz)
+		return -EINVAL;
+
+	ridx = ti_reg_id_to_idx(id);
+	if (ridx >= 0) {
+		int r = ti_reg_mem_at(ridx, idx, name, bit_off, bit_sz);
+
+		if (!r && type)
+			*type = 0;
+		return r;
+	}
+
+	ret = ti_follow(ctx, id, &id);
+	if (ret)
+		return ret;
+
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+		return -EINVAL;
+
+	vlen = BTF_INFO_VLEN(t->info);
+	if (idx >= vlen)
+		return -ENOENT;
+	m = (const struct btf_member *)(t + 1);
+	if (BTF_INFO_KFLAG(t->info)) {
+		*bit_off = BTF_MEMBER_BIT_OFF(m[idx].offset);
+		*bit_sz = BTF_MEMBER_BIT_SZ(m[idx].offset);
+	} else {
+		*bit_off = m[idx].offset;
+		*bit_sz = 0;
+	}
+	*name = ctx_str(ctx, m[idx].name_off);
+	if (type)
+		*type = m[idx].type;
+	return 0;
+}
+
 int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
 		  u32 *bit_off, u32 *bit_sz)
 {
@@ -285,9 +382,14 @@ int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
 	u32 vlen;
 	u32 i;
 	int ret;
+	int idx;
 
 	if (!ctx || !member || !bit_off || !bit_sz)
 		return -EINVAL;
+
+	idx = ti_reg_id_to_idx(id);
+	if (idx >= 0)
+		return ti_reg_member(idx, member, bit_off, bit_sz);
 
 	ret = ti_follow(ctx, id, &id);
 	if (ret)
@@ -326,9 +428,16 @@ int ti_member_info(const struct ti_ctx *ctx, u32 id, const char *member,
 	u32 vlen;
 	u32 i;
 	int ret;
+	int idx;
 
 	if (!ctx || !member || !type || !bit_off || !bit_sz)
 		return -EINVAL;
+
+	idx = ti_reg_id_to_idx(id);
+	if (idx >= 0) {
+		*type = 0;
+		return ti_reg_member(idx, member, bit_off, bit_sz);
+	}
 
 	ret = ti_follow(ctx, id, &id);
 	if (ret)

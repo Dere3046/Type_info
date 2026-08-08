@@ -26,8 +26,12 @@ int verify_ti(void);
 
 int ti_cur_pid __used = 1;
 int ti_ref_pid __used = 2;
+int ti_mod_anchor __used = 0;
+int ti_btf_mode __used = 0;
 module_param(ti_cur_pid, int, 0);
 module_param(ti_ref_pid, int, 0);
+module_param(ti_mod_anchor, int, 0);
+module_param(ti_btf_mode, int, 0);
 
 static int __init type_info_init(void)
 {
@@ -40,17 +44,16 @@ static int __init type_info_init(void)
 	}
 
 	ret = ti_init(&kr_res);
-	if (ret == -ENOTSUPP) {
-		pr_warn("[type_info] vmlinux btf unavailable, degraded\n");
-		verify_ti();
-		return 0;
-	}
 	if (ret) {
 		pr_err("[type_info] init failed: %d\n", ret);
 		return 0;
 	}
 
-	pr_info("[type_info] vmlinux btf ready, %u types\n", ti_type_count());
+	if (ti_btf_available())
+		pr_info("[type_info] vmlinux btf ready, %u types\n",
+			ti_type_count());
+	else
+		pr_warn("[type_info] vmlinux btf unavailable, degraded\n");
 	verify_ti();
 	return 0;
 }

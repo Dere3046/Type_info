@@ -8,7 +8,7 @@
 #include <linux/string.h>
 
 #include "btf.h"
-#include "core.h"
+#include "port.h"
 
 static u32 btf_extra(u32 kind, u32 vlen)
 {
@@ -49,7 +49,7 @@ int btf_open(const void *blob, u32 size, struct btf_cursor *c)
 	if (!blob || size < sizeof(struct btf_header))
 		return -EINVAL;
 
-	if (safe_read(&h, blob, sizeof(h)))
+	if (ti_safe_read(&h, blob, sizeof(h)))
 		return -EINVAL;
 	if (h.magic != BTF_MAGIC || h.version != 1 || h.hdr_len < sizeof(h))
 		return -EINVAL;
