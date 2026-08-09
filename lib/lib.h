@@ -32,8 +32,4 @@ struct ti_ctx {
 
 int ti_ctx_init(struct ti_ctx *c, const void *blob, u32 size);
 
-void ti_verify_captured(const struct ti_ctx *mc);
-void ti_verify_enum(void);
-void ti_verify_reg(void);
-
 #endif

@@ -22,12 +22,12 @@ static struct ti_resolver kr_res = {
 	.name_to_addr = kr_name_to_addr,
 };
 
-int verify_ti(void);
+void ti_verify_ti(void);
 
 int ti_cur_pid __used = 1;
 int ti_ref_pid __used = 2;
-int ti_mod_anchor __used = 0;
-int ti_btf_mode __used = 0;
+extern int ti_mod_anchor;
+extern int ti_btf_mode;
 module_param(ti_cur_pid, int, 0);
 module_param(ti_ref_pid, int, 0);
 module_param(ti_mod_anchor, int, 0);
@@ -54,7 +54,7 @@ static int __init type_info_init(void)
 			ti_type_count());
 	else
 		pr_warn("[type_info] vmlinux btf unavailable, degraded\n");
-	verify_ti();
+	ti_verify_ti();
 	return 0;
 }
 

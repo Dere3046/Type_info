@@ -10,6 +10,7 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+#include <linux/export.h>
 #include <linux/fs.h>
 #include <linux/dcache.h>
 #include <linux/cred.h>
@@ -696,12 +697,12 @@ static void verify_mod_enum(void)
 	pr_info("[type_info] mod enum: %u modules (%d)\n", n, ret);
 }
 
-void ti_verify_enum(void)
+static void ti_verify_enum(void)
 {
 	verify_mod_enum();
 }
 
-void ti_verify_reg(void)
+static void ti_verify_reg(void)
 {
 	static const struct {
 		const char *name;
@@ -776,7 +777,7 @@ void ti_verify_reg(void)
 		vfails == 1 ? "" : "s");
 }
 
-void ti_verify_captured(const struct ti_ctx *mc)
+static void ti_verify_captured(const struct ti_ctx *mc)
 {
 	vfails = 0;
 	if (strcmp(mc->name, "testmod"))
@@ -838,7 +839,7 @@ static void verify_anchor(void)
 	      offsetof(struct task_struct, mm));
 }
 
-int verify_ti(void)
+void ti_verify_ti(void)
 {
 	struct ti_ctx *mc;
 
@@ -856,9 +857,10 @@ int verify_ti(void)
 		verify_mod_cfg(mc);
 	else
 		pr_info("[type_info] testmod not captured yet\n");
+	ti_verify_reg();
 	verify_mod_enum();
 
 	pr_info("[type_info] verify done, %d fail%s\n", vfails,
 		vfails == 1 ? "" : "s");
-	return vfails;
 }
+EXPORT_SYMBOL(ti_verify_ti);

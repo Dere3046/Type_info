@@ -20,8 +20,8 @@
 #include "port.h"
 #include "reg.h"
 
-extern int ti_mod_anchor;
-extern int ti_btf_mode;
+int ti_mod_anchor __used = 0;
+int ti_btf_mode __used = 0;
 
 struct ti_mod_ent {
 	char name[MODULE_NAME_LEN];
@@ -174,7 +174,6 @@ static int ti_mod_capture(struct module *mod)
 	dsize = *(unsigned int *)((char *)mod + ti_m_offs.off_btf_data_size);
 	if (!dptr || !dsize) {
 		pr_info("[type_info] module %s no btf data\n", mod->name);
-		ti_verify_enum();
 		return 0;
 	}
 
@@ -273,7 +272,6 @@ static int ti_mod_capture(struct module *mod)
 	ti_mod_ent_add(&ent);
 	pr_info("[type_info] module %s btf captured: %u types\n", mod->name,
 		mc->cur.type_cnt);
-	ti_verify_captured(mc);
 	return 0;
 }
 
@@ -284,8 +282,6 @@ static int ti_mod_notify(struct notifier_block *nb, unsigned long ev,
 
 	if (ev == MODULE_STATE_COMING)
 		ti_mod_capture(mod);
-	else if (ev == MODULE_STATE_LIVE)
-		ti_verify_reg();
 	else if (ev == MODULE_STATE_GOING)
 		ti_mod_ent_del(mod->name);
 	return NOTIFY_DONE;
