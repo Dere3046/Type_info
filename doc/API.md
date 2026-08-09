@@ -15,6 +15,11 @@ kallsyms_name_to_addr as ti_resolver.name_to_addr.
 kallrecon/lib/core.o and kallrecon/lib/anchor.o are linked into the
 module. only sprint_symbol is required from the kernel.
 
+lib is self contained and does not reference src. linking lib/*.o
+plus kallrecon suffices for a standalone LKM. src/main.c adds the
+module params and the bootstrap entry, src/verify.c adds the self
+test (ti_verify_ti), both optional for embedded use.
+
 symbols resolved through the resolver:
 
 - __start_BTF / __stop_BTF: vmlinux BTF blob bounds
@@ -36,6 +41,16 @@ library keeps working.
 
 unregisters the notifier, frees captured module contexts and the
 registry.
+
+## Self test
+
+**void ti_verify_ti(void)**
+
+run the full self test: synthetic BTF, kernel layout against
+compile-time offsets, anchor offsets, module config, registry and
+module enum. prints fail counts, callers check the log. exported,
+any LKM can trigger it. this is an example verification, an embedded
+lib user can write its own checks against the query API instead.
 
 ## Layout source
 
@@ -276,6 +291,10 @@ after module init, so a manual capture only works for a module that
 is loading right now.
 
 ## Load options (module params)
+
+these module params live in src/main.c. they apply to the resident
+type_info.ko. a source-linked LKM (lib only) keeps the defaults and
+cannot change them at load time.
 
 ti_cur_pid: current process pid, bootstrap input for the task anchor
 
