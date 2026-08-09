@@ -105,6 +105,42 @@ full struct layout (member names and offsets).
 synthetic ids >= 0x80000000 (TI_REG_ID_BASE) resolve to the registry;
 all query functions handle them.
 
+## Feature query (CONFIG_TI_FEATURE)
+
+find a struct by its shape instead of its name. works when the name
+is unknown or corrupted.
+
+**int ti_type_by_size(const struct ti_ctx *ctx, u32 size, u32 vlen,
+u32 *out)**
+
+find a struct or union by size. vlen is the member count, pass 0 to
+skip that check. searches own types first, then the base context.
+
+**int ti_type_by_seq(const struct ti_ctx *ctx, u32 size,
+const struct ti_member_desc *seq, u32 n, u32 *out)**
+
+find a struct or union whose first n members match the given offsets.
+a member name in seq is checked when set, NULL skips the name check.
+use this when you know the layout but not the name.
+
+## Remap (CONFIG_TI_REMAP)
+
+when a name lookup misses in a module context, it retries in the
+vmlinux context. module BTF carries kernel types too, and their ids
+stay valid across contexts, so the vmlinux id works directly. remap
+only runs when the context base chain tops out at vmlinux. a distilled
+base (6.12) does not match, so remap is skipped there.
+
+## String base estimation
+
+module BTF strings reference the build time base table. when the
+running kernel is built from a different source, those references
+shift. private strings (offset beyond the base)
+are recovered by voting on name_off - local_off over all types and
+members. the winner becomes the string base, verified on 5.10/5.15/
+6.1/6.6. strings that reference the base table itself stay shifted
+without the distilled table.
+
 ## Registry (collaborative registration)
 
 **struct ti_member_desc { const char *name; u32 bit_off; u32 bit_sz; }**
@@ -173,6 +209,13 @@ find two equal nonzero pointers next to each other.
 
 same, scanning backwards.
 
+**int ti_anchor_set_modname(const char *name)**
+
+pin the module name used by the struct module anchor. by default the
+anchor scans the module mirror for a name and checks it against
+init/exit symbols. call this before ti_init to force a known name.
+exported.
+
 custom anchor pattern: scan for a known value (string, constant,
 pointer pair), verify with cross-checks across several objects, cache
 the offset. ti_bootstrap_task and ti_bootstrap_module are reference
@@ -187,12 +230,50 @@ and later have it). this means:
 - no vmlinux .BTF, so ti_init takes the anchor path and kernel struct
   layout comes from anchor scanning (task_struct five-piece, struct
   module)
-- struct module has no btf_data field (compiled out), and modules are
-  built without .BTF, so module BTF capture is unavailable
+- android13-5.10 does have vmlinux BTF, but both 5.10 kernels are
+  built without the module BTF option, so modules carry no usable
+  btf_data and module capture is unavailable
 - the only layout source for later-loaded LKMs is collaborative
   registration (ti_reg_struct), which does not depend on BTF
 - arbitrary third-party LKM layouts have no info source and cannot be
   recovered
+
+## DWARF member names (CONFIG_TI_DWARF)
+
+module BTF member names shift when the running kernel is built from a
+different source than the module. the module mirror keeps its own
+DWARF data, and that data is self contained: member names and offsets
+stay valid no matter which kernel the module runs on. with
+CONFIG_TI_DWARF, the module context parses it at capture time.
+
+**int ti_dw_capture(struct ti_dw *dw, const void *btf_data)**
+
+find the ELF header by scanning backward from btf_data, read the
+section table, apply ET_REL relocations, then walk DWARF4/5 units. on
+success the context uses the table as a name fallback. bitfield
+members use DW_AT_data_bit_offset (DWARF5 and clang) and
+DW_AT_bit_offset (DWARF4) math, both supported.
+
+**int ti_dw_member_off(const struct ti_dw *dw, const char *sname,
+const char *member, u32 *bit_off, u32 *bit_sz)**
+
+look up a member offset by name in the DWARF table.
+
+**const char *ti_dw_member_name(const struct ti_dw *dw,
+const char *sname, u32 bit_off, u32 bit_sz)**
+
+look up a member name by offset in the DWARF table.
+
+with CONFIG_TI_DWARF, ti_member_off falls back to the table when BTF
+misses, and ti_member_at uses the table to rewrite names.
+
+two export levels: CONFIG_TI_DWARF keeps the table internal (the
+query functions still use it), CONFIG_TI_DWARF_EXPORT also exports
+the three functions above to other LKMs. the captured table lives in
+the module context, other LKMs normally reach it through
+ti_mod_lookup. ti_dw_capture needs btf_data, which the kernel clears
+after module init, so a manual capture only works for a module that
+is loading right now.
 
 ## Load options (module params)
 
@@ -209,3 +290,31 @@ otherwise vmlinux as base.
 ## Build options
 
 TI_PUBLIC_ANCHOR=1: export the anchor scanning primitives (default off)
+
+TI_FEATURE=1: export ti_type_by_size and ti_type_by_seq (default off)
+
+TI_REMAP=1: retry lookups against vmlinux (default on, TI_REMAP=0 off)
+
+TI_DWARF=1: capture module DWARF member names (default off)
+
+TI_DWARF_EXPORT=1: also export the DWARF functions (implies TI_DWARF,
+default off)
+
+## Limitations
+
+- android12-5.10 has no vmlinux BTF and no module BTF. kernel layout
+  comes from anchors, module layout from registration.
+- android13-5.10 has vmlinux BTF but no module BTF (the kernel is
+  built without the module BTF option), so module capture and DWARF
+  do not run.
+- android15-6.6 and android16-6.12 modules carry relocation
+  placeholders in their debug info, the module mirror keeps the raw
+  bytes, so DWARF capture fails there. 6.12 names are fine via the
+  distilled base, 6.6 module private names stay shifted.
+- DWARF capture runs when a module loads. the kernel clears btf_data
+  after module init, so a module that loaded before type_info cannot
+  be captured later. load type_info first.
+- DWARF only knows module owned structs. kernel structs have no body
+  in module DWARF, their names come from vmlinux BTF.
+- names that reference the base table (see String base estimation)
+  stay shifted on cross source builds.

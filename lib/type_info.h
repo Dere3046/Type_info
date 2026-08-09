@@ -8,6 +8,10 @@
 
 #include <linux/types.h>
 
+#ifdef CONFIG_TI_DWARF_EXPORT
+#include "dwarf.h"
+#endif
+
 struct ti_resolver {
 	unsigned long (*name_to_addr)(const char *name);
 };
@@ -62,6 +66,15 @@ struct ti_member_desc {
 int ti_reg_struct(const char *name, u32 size,
 		  const struct ti_member_desc *members, u32 n);
 void ti_unreg_struct(const char *name);
+
+int ti_anchor_set_modname(const char *name);
+
+#ifdef CONFIG_TI_FEATURE
+int ti_type_by_size(const struct ti_ctx *ctx, u32 size, u32 vlen,
+		    u32 *out);
+int ti_type_by_seq(const struct ti_ctx *ctx, u32 size,
+		   const struct ti_member_desc *seq, u32 n, u32 *out);
+#endif
 
 #ifdef CONFIG_TI_PUBLIC_ANCHOR
 int ti_safe_read(void *dst, const void *src, size_t sz);

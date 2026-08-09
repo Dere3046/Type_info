@@ -8,6 +8,12 @@
 
 #include <linux/types.h>
 
+struct ti_test_bits {
+	u32 a : 3;
+	u32 b : 5;
+	u32 rest;
+};
+
 struct ti_test_cfg {
 	u32 magic;
 	u16 flags;

@@ -88,7 +88,10 @@ static void *ti_blob_dup(const void *src, u32 size)
 	p = kvmalloc(size, GFP_KERNEL);
 	if (!p)
 		return NULL;
-	memcpy(p, src, size);
+	if (ti_safe_read(p, src, size)) {
+		kvfree(p);
+		return NULL;
+	}
 	return p;
 }
 
@@ -240,6 +243,27 @@ static int ti_mod_capture(struct module *mod)
 		vfree(blob);
 		return 0;
 	}
+
+#ifdef CONFIG_TI_DWARF
+	{
+		struct ti_dw *dw = kzalloc(sizeof(*dw), GFP_KERNEL);
+
+		if (dw) {
+			int dr = ti_dw_capture(dw, (const void *)dptr);
+
+			if (dr) {
+				pr_info("[type_info] module %s dwarf parse "
+					"failed: %d\n", mod->name, dr);
+				ti_dw_free(dw);
+				kfree(dw);
+			} else {
+				mc->dw = dw;
+				pr_info("[type_info] module %s dwarf: %u "
+					"structs\n", mod->name, dw->cnt);
+			}
+		}
+	}
+#endif
 
 	memset(&ent, 0, sizeof(ent));
 	strscpy(ent.name, mod->name, sizeof(ent.name));

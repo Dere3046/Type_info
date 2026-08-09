@@ -129,7 +129,8 @@ int ti_reg_mem_at(u32 idx, u32 i, const char **name, u32 *bit_off,
 {
 	if (i >= ti_reg[idx].n)
 		return -ENOENT;
-	*name = ti_reg[idx].mem[i].name;
+	if (name)
+		*name = ti_reg[idx].mem[i].name;
 	*bit_off = ti_reg[idx].mem[i].bit_off;
 	*bit_sz = ti_reg[idx].mem[i].bit_sz;
 	return 0;

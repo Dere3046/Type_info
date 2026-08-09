@@ -10,6 +10,11 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+#include <linux/fs.h>
+#include <linux/dcache.h>
+#include <linux/cred.h>
+#include <linux/mm_types.h>
+#include <linux/module.h>
 
 #include "btf.h"
 #include "lib.h"
@@ -301,6 +306,90 @@ static void verify_synth(void)
 	vfree(bblob);
 }
 
+static void spot_check(const struct ti_ctx *base, const char *sname,
+		       size_t csize, const char *const *mnames,
+		       const size_t *coffs, u32 nmem)
+{
+	u32 id;
+	u32 bo;
+	u32 bs;
+	int ret;
+	int i;
+
+	ret = ti_type_by_name(base, sname, BIT(BTF_KIND_STRUCT), &id);
+	CHECK(!ret, "[type_info] spot %s not found (%d)\n", sname, ret);
+	if (ret)
+		return;
+	CHECK(ti_type_size(base, id) == csize,
+	      "[type_info] spot %s size btf=%u compile=%zu\n", sname,
+	      ti_type_size(base, id), csize);
+	for (i = 0; i < (int)nmem; i++) {
+		ret = ti_member_off(base, id, mnames[i], &bo, &bs);
+		if (ret) {
+			int n = ti_member_count(base, id);
+			int j;
+
+			pr_info("[type_info] spot %s.%s miss ret=%d id=%u "
+				"members=%d\n", sname, mnames[i], ret, id, n);
+			for (j = 0; j < n && j < 8; j++) {
+				const char *mn = NULL;
+
+				if (!ti_member_at(base, id, j, &mn, NULL, &bo,
+						  &bs))
+					pr_info("[type_info]   m[%d] '%s'\n", j,
+						mn);
+			}
+		}
+		CHECK(!ret && bo / 8 == coffs[i] && !bs,
+		      "[type_info] spot %s.%s off=%u compile=%zu (ret=%d)\n",
+		      sname, mnames[i], bo / 8, coffs[i], ret);
+	}
+	pr_info("[type_info] spot %s ok\n", sname);
+}
+
+static void verify_kernel_spot(const struct ti_ctx *base)
+{
+	static const char *const mm_m[] = { "task_size", "pgd", "arg_start" };
+	static const size_t mm_o[] = {
+		offsetof(struct mm_struct, task_size),
+		offsetof(struct mm_struct, pgd),
+		offsetof(struct mm_struct, arg_start),
+	};
+	static const char *const cred_m[] = { "usage", "uid", "euid" };
+	static const size_t cred_o[] = {
+		offsetof(struct cred, usage),
+		offsetof(struct cred, uid),
+		offsetof(struct cred, euid),
+	};
+	static const char *const file_m[] = { "f_mode", "f_pos", "f_inode" };
+	static const size_t file_o[] = {
+		offsetof(struct file, f_mode),
+		offsetof(struct file, f_pos),
+		offsetof(struct file, f_inode),
+	};
+	static const char *const dentry_m[] = { "d_name", "d_parent",
+						"d_inode" };
+	static const size_t dentry_o[] = {
+		offsetof(struct dentry, d_name),
+		offsetof(struct dentry, d_parent),
+		offsetof(struct dentry, d_inode),
+	};
+	static const char *const module_m[] = { "list", "name", "state" };
+	static const size_t module_o[] = {
+		offsetof(struct module, list),
+		offsetof(struct module, name),
+		offsetof(struct module, state),
+	};
+
+	spot_check(base, "mm_struct", sizeof(struct mm_struct), mm_m, mm_o, 3);
+	spot_check(base, "cred", sizeof(struct cred), cred_m, cred_o, 3);
+	spot_check(base, "file", sizeof(struct file), file_m, file_o, 3);
+	spot_check(base, "dentry", sizeof(struct dentry), dentry_m, dentry_o,
+		   3);
+	spot_check(base, "module", sizeof(struct module), module_m, module_o,
+		   3);
+}
+
 static void verify_kernel(const struct ti_ctx *base)
 {
 	u32 id;
@@ -375,6 +464,8 @@ static void verify_kernel(const struct ti_ctx *base)
 		      offsetof(struct task_struct, tasks),
 		      offsetof(struct task_struct, mm));
 	}
+
+	verify_kernel_spot(base);
 }
 
 static void verify_mod_cfg_struct(const struct ti_ctx *c)
@@ -436,64 +527,154 @@ static void verify_mod_cfg_struct(const struct ti_ctx *c)
 
 static void verify_mod_cfg(const struct ti_ctx *c)
 {
+	static const u32 want_off[] = { 0, 32, 48, 56, 64, 128, 256 };
 	u32 cfg_id;
-	u32 bits_id;
 	u32 bit_off;
 	u32 bit_sz;
 	u32 type;
 	int ret;
+	int n;
+	int j;
 
 	ret = ti_type_by_name(c, "ti_test_cfg", BIT(BTF_KIND_STRUCT), &cfg_id);
 	if (ret) {
 		pr_info("[type_info] mod: name lookup unavailable (%d), "
 			"structural verify\n", ret);
 		verify_mod_cfg_struct(c);
-		return;
+	} else {
+		CHECK(ti_type_size(c, cfg_id) == sizeof(struct ti_test_cfg),
+		      "[type_info] mod: cfg size btf=%u compile=%zu\n",
+		      ti_type_size(c, cfg_id), sizeof(struct ti_test_cfg));
+
+		/* member offsets by index: member names may be shifted on
+		 * cross-source builds, offsets are always valid */
+		n = ti_member_count(c, cfg_id);
+		CHECK(n == (int)ARRAY_SIZE(want_off),
+		      "[type_info] mod: count=%d want=%zu\n", n,
+		      ARRAY_SIZE(want_off));
+		for (j = 0; j < n && j < (int)ARRAY_SIZE(want_off); j++) {
+			u32 moff;
+			u32 msz;
+
+			ret = ti_member_at(c, cfg_id, j, NULL, &type, &moff,
+					   &msz);
+			CHECK(!ret && moff == want_off[j] && !msz,
+			      "[type_info] mod: m[%d] off=%u want=%u "
+			      "(ret=%d)\n", j, moff, want_off[j], ret);
+		}
+
+#ifdef CONFIG_TI_DWARF
+		/* DWARF member names: valid on any build */
+		ret = ti_member_off(c, cfg_id, "magic", &bit_off, &bit_sz);
+		CHECK(!ret && bit_off == 0 && !bit_sz,
+		      "[type_info] mod: dw magic off=%u sz=%u (ret=%d)\n",
+		      bit_off, bit_sz, ret);
+		ret = ti_member_off(c, cfg_id, "tag", &bit_off, &bit_sz);
+		CHECK(!ret && bit_off == 128 && !bit_sz,
+		      "[type_info] mod: dw tag off=%u sz=%u (ret=%d)\n",
+		      bit_off, bit_sz, ret);
+		ret = ti_member_off(c, cfg_id, "bits", &bit_off, &bit_sz);
+		CHECK(!ret && bit_off == 256 && !bit_sz,
+		      "[type_info] mod: dw bits off=%u sz=%u (ret=%d)\n",
+		      bit_off, bit_sz, ret);
+		{
+			const char *mn = NULL;
+
+			ret = ti_member_at(c, cfg_id, 0, &mn, NULL, &bit_off,
+					   &bit_sz);
+			CHECK(!ret && mn && !strcmp(mn, "magic"),
+			      "[type_info] mod: dw m[0] name=%s (ret=%d)\n",
+			      mn ? mn : "?", ret);
+		}
+		if (c->dw) {
+			/* DWARF bitfield offsets (DWARF4 bit_offset math) */
+			ret = ti_dw_member_off(c->dw, "ti_test_bits", "a",
+					       &bit_off, &bit_sz);
+			CHECK(!ret && bit_off == 0 && bit_sz == 3,
+			      "[type_info] mod: dw bits.a off=%u sz=%u "
+			      "(ret=%d)\n", bit_off, bit_sz, ret);
+			ret = ti_dw_member_off(c->dw, "ti_test_bits", "b",
+					       &bit_off, &bit_sz);
+			CHECK(!ret && bit_off == 3 && bit_sz == 5,
+			      "[type_info] mod: dw bits.b off=%u sz=%u "
+			      "(ret=%d)\n", bit_off, bit_sz, ret);
+			ret = ti_dw_member_off(c->dw, "ti_test_bits", "rest",
+					       &bit_off, &bit_sz);
+			CHECK(!ret && bit_off == 32 && !bit_sz,
+			      "[type_info] mod: dw bits.rest off=%u sz=%u "
+			      "(ret=%d)\n", bit_off, bit_sz, ret);
+		}
+#endif
 	}
 
-	CHECK(ti_type_size(c, cfg_id) == sizeof(struct ti_test_cfg),
-	      "[type_info] mod: cfg size btf=%u compile=%zu\n",
-	      ti_type_size(c, cfg_id), sizeof(struct ti_test_cfg));
+#ifdef CONFIG_TI_FEATURE
+	{
+		static const struct ti_member_desc seq[] = {
+			{ NULL, 0, 0 },
+			{ NULL, 32, 0 },
+			{ NULL, 48, 0 },
+		};
+		u32 fid;
+		int j;
 
-	ret = ti_member_info(c, cfg_id, "magic", &type, &bit_off, &bit_sz);
-	CHECK(!ret && bit_off / 8 == offsetof(struct ti_test_cfg, magic) &&
-	      !bit_sz,
-	      "[type_info] mod: magic off=%u compile=%zu\n", bit_off / 8,
-	      offsetof(struct ti_test_cfg, magic));
+		ret = ti_type_by_seq(c, sizeof(struct ti_test_cfg), seq,
+				     ARRAY_SIZE(seq), &fid);
+		CHECK(!ret, "[type_info] mod: feature seq miss (%d)\n", ret);
+		if (!ret) {
+			int n = ti_member_count(c, fid);
 
-	ret = ti_member_info(c, cfg_id, "flags", &type, &bit_off, &bit_sz);
-	CHECK(!ret && bit_off / 8 == offsetof(struct ti_test_cfg, flags) &&
-	      !bit_sz,
-	      "[type_info] mod: flags off=%u compile=%zu\n", bit_off / 8,
-	      offsetof(struct ti_test_cfg, flags));
+			CHECK(n == (int)ARRAY_SIZE(want_off),
+			      "[type_info] mod: feature count=%d want=%zu\n",
+			      n, ARRAY_SIZE(want_off));
+			for (j = 0; j < n && j < (int)ARRAY_SIZE(want_off);
+			     j++) {
+				u32 fo;
+				u32 fs;
 
-	ret = ti_member_info(c, cfg_id, "seq", &type, &bit_off, &bit_sz);
-	CHECK(!ret && bit_off / 8 == offsetof(struct ti_test_cfg, seq) && !bit_sz,
-	      "[type_info] mod: seq off=%u compile=%zu\n", bit_off / 8,
-	      offsetof(struct ti_test_cfg, seq));
+				ret = ti_member_at(c, fid, j, NULL, NULL, &fo,
+						   &fs);
+				CHECK(!ret && fo == want_off[j] && !fs,
+				      "[type_info] mod: feature m[%d] "
+				      "off=%u want=%u (ret=%d)\n", j, fo,
+				      want_off[j], ret);
+			}
+		}
+	}
+#endif
 
-	ret = ti_member_info(c, cfg_id, "tag", &type, &bit_off, &bit_sz);
-	CHECK(!ret && bit_off / 8 == offsetof(struct ti_test_cfg, tag) && !bit_sz,
-	      "[type_info] mod: tag off=%u compile=%zu\n", bit_off / 8,
-	      offsetof(struct ti_test_cfg, tag));
+#ifdef CONFIG_TI_REMAP
+	{
+		const struct ti_ctx *kb = ti_base();
+		const struct ti_ctx *cc;
+		u32 tid;
 
-	ret = ti_member_info(c, cfg_id, "bits", &bits_id, &bit_off, &bit_sz);
-	CHECK(!ret && bit_off / 8 == offsetof(struct ti_test_cfg, bits) &&
-	      !bit_sz,
-	      "[type_info] mod: bits off=%u compile=%zu\n", bit_off / 8,
-	      offsetof(struct ti_test_cfg, bits));
-	if (ret)
-		return;
-
-	ret = ti_member_off(c, bits_id, "a", &bit_off, &bit_sz);
-	CHECK(!ret && bit_off == 0 && bit_sz == 3,
-	      "[type_info] mod: bits.a off=%u sz=%u\n", bit_off, bit_sz);
-	ret = ti_member_off(c, bits_id, "b", &bit_off, &bit_sz);
-	CHECK(!ret && bit_off == 3 && bit_sz == 5,
-	      "[type_info] mod: bits.b off=%u sz=%u\n", bit_off, bit_sz);
-	ret = ti_member_off(c, bits_id, "rest", &bit_off, &bit_sz);
-	CHECK(!ret && bit_off == 32 && bit_sz == 0,
-	      "[type_info] mod: bits.rest off=%u sz=%u\n", bit_off, bit_sz);
+		cc = c;
+		while (cc->base)
+			cc = cc->base;
+		if (cc == kb && kb->cur.type_cnt) {
+			ret = ti_type_by_name(c, "task_struct",
+					      BIT(BTF_KIND_STRUCT), &tid);
+			CHECK(!ret && tid <= c->cur.id_off,
+			      "[type_info] mod: remap task_struct ret=%d "
+			      "id=%u id_off=%u\n", ret, tid, c->cur.id_off);
+			if (!ret) {
+				ret = ti_member_off(c, tid, "pid", &bit_off,
+						    &bit_sz);
+				CHECK(!ret && bit_off / 8 ==
+						 offsetof(struct task_struct,
+							  pid) &&
+				      !bit_sz,
+				      "[type_info] mod: remap "
+				      "task_struct.pid off=%u compile=%zu "
+				      "(ret=%d)\n", bit_off / 8,
+				      offsetof(struct task_struct, pid), ret);
+			}
+		} else {
+			pr_info("[type_info] mod: remap skipped (base is "
+				"not vmlinux)\n");
+		}
+	}
+#endif
 }
 
 static int enum_cb(const struct ti_module *m, void *arg)

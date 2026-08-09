@@ -125,6 +125,101 @@ static struct ti_nsent *ns_bsearch(const char *name, struct ti_nsent *a,
 	return NULL;
 }
 
+#define TI_STR_CAND	64
+
+static void ti_str_vote(u32 n, u32 l, u32 *cands, u32 *cnts, u32 *nc)
+{
+	u64 d;
+	u32 i;
+
+	if (n <= l)
+		return;
+	d = (u64)n - l;
+	if (d < (1 << 20) || d >= (1 << 30))
+		return;
+	for (i = 0; i < *nc; i++) {
+		if (cands[i] == (u32)d) {
+			cnts[i]++;
+			return;
+		}
+	}
+	if (*nc < TI_STR_CAND) {
+		cands[*nc] = (u32)d;
+		cnts[*nc] = 1;
+		(*nc)++;
+	}
+}
+
+/* module blob private strings reference the build-time base string table:
+ * name_off = B + local_off. estimate B by voting name_off - local_off. */
+static u32 ti_str_base_est(const struct ti_ctx *c)
+{
+	const struct btf_cursor *cur = &c->cur;
+	u32 local[TI_STR_CAND];
+	u32 cands[TI_STR_CAND];
+	u32 cnts[TI_STR_CAND];
+	u32 lcnt = 0;
+	u32 nc = 0;
+	u32 off = 0;
+	u32 best = 0;
+	u32 bestcnt = 0;
+	u32 i;
+
+	while (off < cur->str_len && lcnt < TI_STR_CAND) {
+		local[lcnt++] = off;
+		while (off < cur->str_len && cur->strs[off])
+			off++;
+		off++;
+	}
+	if (!lcnt)
+		return 0;
+
+	for (i = 1; i <= cur->type_cnt; i++) {
+		const struct btf_type *t = btf_type(cur, cur->id_off + i);
+		const struct btf_member *m;
+		u32 kind;
+		u32 vlen;
+		u32 j;
+
+		if (!t)
+			break;
+		for (j = 0; j < lcnt; j++)
+			ti_str_vote(t->name_off, local[j], cands, cnts, &nc);
+		kind = BTF_INFO_KIND(t->info);
+		if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+			continue;
+		vlen = BTF_INFO_VLEN(t->info);
+		m = (const struct btf_member *)(t + 1);
+		for (j = 0; j < vlen; j++) {
+			u32 k;
+
+			for (k = 0; k < lcnt; k++)
+				ti_str_vote(m[j].name_off, local[k], cands,
+					    cnts, &nc);
+		}
+	}
+	for (i = 0; i < nc; i++) {
+		if (cnts[i] > bestcnt) {
+			bestcnt = cnts[i];
+			best = cands[i];
+		}
+	}
+	if (bestcnt < 2)
+		return 0;
+	return best;
+}
+
+static bool ti_root_is_vmlinux(const struct ti_ctx *c)
+{
+	const struct ti_ctx *b = c->base;
+
+	if (!b)
+		return false;
+	while (b->base)
+		b = b->base;
+	return b == ti_base();
+}
+
 int ti_ctx_init(struct ti_ctx *c, const void *blob, u32 size)
 {
 	struct ti_nsent *map;
@@ -141,6 +236,14 @@ int ti_ctx_init(struct ti_ctx *c, const void *blob, u32 size)
 	if (c->base) {
 		c->cur.id_off = c->base->cur.type_cnt;
 		c->cur.str_base_off = c->base->cur.str_len;
+		if (ti_root_is_vmlinux(c)) {
+			u32 B = ti_str_base_est(c);
+
+			pr_info("[type_info] %s base str_len=%u est=%u\n",
+				c->name, c->cur.str_base_off, B);
+			if (B && B != c->cur.str_base_off)
+				c->cur.str_base_off = B;
+		}
 	}
 
 	map = vmalloc(sizeof(*map) * c->cur.type_cnt);
@@ -193,33 +296,24 @@ void ti_ctx_close(struct ti_ctx *ctx)
 		return;
 	vfree(ctx->name_map);
 	btf_close(&ctx->cur);
+#ifdef CONFIG_TI_DWARF
+	ti_dw_free(ctx->dw);
+	kfree(ctx->dw);
+#endif
 	kfree(ctx);
 }
 
-int ti_type_by_name(const struct ti_ctx *ctx, const char *name,
-		    u32 kind_mask, u32 *out)
+static int ti_name_own(const struct ti_ctx *ctx, const char *name,
+		       u32 kind_mask, u32 *out)
 {
 	struct ti_nsent *hit;
 	u32 i;
 
-	if (!ctx || !name || !out)
-		return -EINVAL;
-
 	q_ctx = ctx;
 	hit = ns_bsearch(name, ctx->name_map, ctx->name_cnt);
 	q_ctx = NULL;
-	if (!hit) {
-		int idx;
-
-		if (kind_mask && !(kind_mask & BIT(BTF_KIND_STRUCT)))
-			return -ENOENT;
-		idx = ti_reg_lookup(name);
-		if (idx < 0)
-			return -ENOENT;
-		*out = ti_reg_idx_to_id(idx);
-		return 0;
-	}
-
+	if (!hit)
+		return -ENOENT;
 	i = hit - ctx->name_map;
 	while (i > 0 &&
 	       !strcmp(name, ctx_str(ctx, ctx->name_map[i - 1].name_off)))
@@ -235,6 +329,58 @@ int ti_type_by_name(const struct ti_ctx *ctx, const char *name,
 		return 0;
 	}
 	return -ENOENT;
+}
+
+int ti_type_by_name(const struct ti_ctx *ctx, const char *name,
+		    u32 kind_mask, u32 *out)
+{
+	int ret;
+	int idx;
+
+	if (!ctx || !name || !out)
+		return -EINVAL;
+
+	ret = ti_name_own(ctx, name, kind_mask, out);
+	if (!ret)
+		return 0;
+
+#ifdef CONFIG_TI_REMAP
+	{
+		const struct ti_ctx *kb = ti_base();
+		const struct ti_ctx *c;
+		u32 bid;
+		u32 mid;
+		int br;
+
+		/* kernel reference is always vmlinux. remap only when the
+		 * ctx base chain tops out at vmlinux: its type ids stay
+		 * valid in this ctx (distilled base ctx ids do not) */
+		c = ctx;
+		while (c->base)
+			c = c->base;
+		if (c == kb && kb->cur.type_cnt) {
+			br = ti_name_own(kb, name, kind_mask, &bid);
+			if (!br) {
+				/* module blob also defines it: keep own
+				 * unless the definitions match in size */
+				if (!ti_name_own(ctx, name, kind_mask, &mid) &&
+				    ti_type_size(ctx, mid) !=
+					    ti_type_size(kb, bid))
+					return -ENOENT;
+				*out = bid;
+				return 0;
+			}
+		}
+	}
+#endif
+
+	if (kind_mask && !(kind_mask & BIT(BTF_KIND_STRUCT)))
+		return -ENOENT;
+	idx = ti_reg_lookup(name);
+	if (idx < 0)
+		return -ENOENT;
+	*out = ti_reg_idx_to_id(idx);
+	return 0;
 }
 
 u32 ti_type_size(const struct ti_ctx *ctx, u32 id)
@@ -296,11 +442,204 @@ int ti_follow(const struct ti_ctx *ctx, u32 id, u32 *out)
 	return 0;
 }
 
-int ti_member_count(const struct ti_ctx *ctx, u32 id)
+static int ti_member_flat_count(const struct ti_ctx *ctx, u32 id, int depth)
 {
 	const struct btf_type *t;
+	const struct btf_member *m;
 	u32 kind;
-	int ret;
+	u32 vlen;
+	u32 n = 0;
+	u32 i;
+
+	if (depth > 8)
+		return 0;
+	if (ti_follow(ctx, id, &id))
+		return 0;
+	t = ctx_type(ctx, id);
+	if (!t)
+		return 0;
+	kind = BTF_INFO_KIND(t->info);
+	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+		return 0;
+	vlen = BTF_INFO_VLEN(t->info);
+	m = (const struct btf_member *)(t + 1);
+	for (i = 0; i < vlen; i++) {
+		const struct btf_type *mt;
+		u32 mttype;
+
+		mttype = m[i].type;
+		mt = ctx_type(ctx, mttype);
+		if (mt && !ctx_str(ctx, m[i].name_off)[0] &&
+		    (BTF_INFO_KIND(mt->info) == BTF_KIND_STRUCT ||
+		     BTF_INFO_KIND(mt->info) == BTF_KIND_UNION)) {
+			u32 cn = ti_member_flat_count(ctx, mttype, depth + 1);
+
+			if (cn)
+				n += cn;
+			else
+				n++;
+			continue;
+		}
+		n++;
+	}
+	return n;
+}
+
+static int ti_member_flat_at(const struct ti_ctx *ctx, u32 id, u32 *widx,
+			     u32 target, const char **name, u32 *type,
+			     u32 *bit_off, u32 *bit_sz, int depth)
+{
+	const struct btf_type *t;
+	const struct btf_member *m;
+	u32 kind;
+	u32 vlen;
+	u32 i;
+
+	if (depth > 8)
+		return -ELOOP;
+	if (ti_follow(ctx, id, &id))
+		return -ENOENT;
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+		return -EINVAL;
+	vlen = BTF_INFO_VLEN(t->info);
+	m = (const struct btf_member *)(t + 1);
+	for (i = 0; i < vlen; i++) {
+		const struct btf_type *mt;
+		u32 mttype;
+		u32 base_off;
+		u32 base_sz;
+
+		if (BTF_INFO_KFLAG(t->info)) {
+			base_off = BTF_MEMBER_BIT_OFF(m[i].offset);
+			base_sz = BTF_MEMBER_BIT_SZ(m[i].offset);
+		} else {
+			base_off = m[i].offset;
+			base_sz = 0;
+		}
+		mttype = m[i].type;
+		mt = ctx_type(ctx, mttype);
+		if (mt && !ctx_str(ctx, m[i].name_off)[0] &&
+		    (BTF_INFO_KIND(mt->info) == BTF_KIND_STRUCT ||
+		     BTF_INFO_KIND(mt->info) == BTF_KIND_UNION) &&
+		    ti_member_flat_count(ctx, mttype, depth + 1)) {
+			int ret = ti_member_flat_at(ctx, mttype, widx, target,
+						    name, type, bit_off,
+						    bit_sz, depth + 1);
+
+			if (!ret) {
+				*bit_off += base_off;
+				return 0;
+			}
+			if (ret != -ENOENT)
+				return ret;
+			continue;
+		}
+		if (*widx == target) {
+			if (name)
+				*name = ctx_str(ctx, m[i].name_off);
+			if (type)
+				*type = mttype;
+			*bit_off = base_off;
+			*bit_sz = base_sz;
+			return 0;
+		}
+		(*widx)++;
+	}
+	return -ENOENT;
+}
+
+#ifdef CONFIG_TI_FEATURE
+static int ti_scan_feature(const struct ti_ctx *ctx, u32 size, u32 vlen,
+			   const struct ti_member_desc *seq, u32 n,
+			   u32 *out)
+{
+	u32 ranges[2][2];
+	u32 r;
+	u32 i;
+
+	/* own types first, then base */
+	ranges[0][0] = ctx->cur.id_off + 1;
+	ranges[0][1] = ctx->cur.id_off + ctx->cur.type_cnt;
+	ranges[1][0] = 1;
+	ranges[1][1] = ctx->cur.id_off;
+	for (r = 0; r < 2; r++) {
+		for (i = ranges[r][0]; i <= ranges[r][1]; i++) {
+			const struct btf_type *t = ctx_type(ctx, i);
+			u32 kind;
+			u32 vlen_t;
+			const struct btf_member *m;
+			u32 j;
+
+			if (!t)
+				break;
+			kind = BTF_INFO_KIND(t->info);
+			if (kind != BTF_KIND_STRUCT &&
+			    kind != BTF_KIND_UNION)
+				continue;
+			if (t->size != size)
+				continue;
+			vlen_t = BTF_INFO_VLEN(t->info);
+			if (vlen && vlen_t != vlen)
+				continue;
+			if (n) {
+				if (vlen_t < n)
+					continue;
+				m = (const struct btf_member *)(t + 1);
+				for (j = 0; j < n; j++) {
+					u32 bo;
+					u32 bs;
+
+					if (BTF_INFO_KFLAG(t->info)) {
+						bo = BTF_MEMBER_BIT_OFF(
+							m[j].offset);
+						bs = BTF_MEMBER_BIT_SZ(
+							m[j].offset);
+					} else {
+						bo = m[j].offset;
+						bs = 0;
+					}
+					if (bo != seq[j].bit_off ||
+					    bs != seq[j].bit_sz)
+						break;
+					if (seq[j].name &&
+					    strcmp(ctx_str(ctx,
+							   m[j].name_off),
+						   seq[j].name))
+						break;
+				}
+				if (j != n)
+					continue;
+			}
+			*out = i;
+			return 0;
+		}
+	}
+	return -ENOENT;
+}
+
+int ti_type_by_size(const struct ti_ctx *ctx, u32 size, u32 vlen,
+		    u32 *out)
+{
+	if (!ctx || !out || !size)
+		return -EINVAL;
+	return ti_scan_feature(ctx, size, vlen, NULL, 0, out);
+}
+
+int ti_type_by_seq(const struct ti_ctx *ctx, u32 size,
+		   const struct ti_member_desc *seq, u32 n, u32 *out)
+{
+	if (!ctx || !out || !size || !n || !seq)
+		return -EINVAL;
+	return ti_scan_feature(ctx, size, 0, seq, n, out);
+}
+#endif
+
+int ti_member_count(const struct ti_ctx *ctx, u32 id)
+{
 	int idx;
 
 	if (!ctx)
@@ -310,71 +649,65 @@ int ti_member_count(const struct ti_ctx *ctx, u32 id)
 	if (idx >= 0)
 		return ti_reg_mem_count(idx);
 
-	ret = ti_follow(ctx, id, &id);
-	if (ret)
-		return ret;
-
-	t = ctx_type(ctx, id);
-	if (!t)
-		return -ENOENT;
-	kind = BTF_INFO_KIND(t->info);
-	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
-		return -EINVAL;
-	return BTF_INFO_VLEN(t->info);
+	return ti_member_flat_count(ctx, id, 0);
 }
 
 int ti_member_at(const struct ti_ctx *ctx, u32 id, u32 idx,
 		 const char **name, u32 *type, u32 *bit_off, u32 *bit_sz)
 {
-	const struct btf_type *t;
-	const struct btf_member *m;
-	u32 kind;
-	u32 vlen;
-	int ret;
+	u32 widx = 0;
 	int ridx;
 
-	if (!ctx || !name || !bit_off || !bit_sz)
+	if (!ctx || !bit_off || !bit_sz)
 		return -EINVAL;
 
 	ridx = ti_reg_id_to_idx(id);
 	if (ridx >= 0) {
-		int r = ti_reg_mem_at(ridx, idx, name, bit_off, bit_sz);
+		const char *mn = NULL;
+		int r;
 
+		if (name)
+			r = ti_reg_mem_at(ridx, idx, name, bit_off, bit_sz);
+		else
+			r = ti_reg_mem_at(ridx, idx, &mn, bit_off, bit_sz);
 		if (!r && type)
 			*type = 0;
 		return r;
 	}
 
-	ret = ti_follow(ctx, id, &id);
-	if (ret)
-		return ret;
+	{
+		int r = ti_member_flat_at(ctx, id, &widx, idx, name, type,
+					  bit_off, bit_sz, 0);
 
-	t = ctx_type(ctx, id);
-	if (!t)
-		return -ENOENT;
-	kind = BTF_INFO_KIND(t->info);
-	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
-		return -EINVAL;
+		if (r)
+			return r;
+#ifdef CONFIG_TI_DWARF
+		if (ctx->dw && name) {
+			const struct btf_type *t;
+			const char *sname;
+			const char *dn;
+			u32 fid = id;
 
-	vlen = BTF_INFO_VLEN(t->info);
-	if (idx >= vlen)
-		return -ENOENT;
-	m = (const struct btf_member *)(t + 1);
-	if (BTF_INFO_KFLAG(t->info)) {
-		*bit_off = BTF_MEMBER_BIT_OFF(m[idx].offset);
-		*bit_sz = BTF_MEMBER_BIT_SZ(m[idx].offset);
-	} else {
-		*bit_off = m[idx].offset;
-		*bit_sz = 0;
+			if (!ti_follow(ctx, fid, &fid))
+				t = ctx_type(ctx, fid);
+			else
+				t = NULL;
+			if (t) {
+				sname = ctx_str(ctx, t->name_off);
+				dn = ti_dw_member_name(ctx->dw, sname,
+						       *bit_off, *bit_sz);
+				if (dn)
+					*name = dn;
+			}
+		}
+#endif
+		return 0;
 	}
-	*name = ctx_str(ctx, m[idx].name_off);
-	if (type)
-		*type = m[idx].type;
-	return 0;
 }
 
-int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
-		  u32 *bit_off, u32 *bit_sz)
+static int ti_member_lookup(const struct ti_ctx *ctx, u32 id,
+			    const char *member, u32 *type_out, u32 *bit_off,
+			    u32 *bit_sz, int depth)
 {
 	const struct btf_type *t;
 	const struct btf_member *m;
@@ -382,14 +715,9 @@ int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
 	u32 vlen;
 	u32 i;
 	int ret;
-	int idx;
 
-	if (!ctx || !member || !bit_off || !bit_sz)
-		return -EINVAL;
-
-	idx = ti_reg_id_to_idx(id);
-	if (idx >= 0)
-		return ti_reg_member(idx, member, bit_off, bit_sz);
+	if (depth > 8)
+		return -ELOOP;
 
 	ret = ti_follow(ctx, id, &id);
 	if (ret)
@@ -414,20 +742,82 @@ int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
 			*bit_off = m[i].offset;
 			*bit_sz = 0;
 		}
+		if (type_out)
+			*type_out = m[i].type;
 		return 0;
 	}
+
+	/* anonymous struct/union member wraps the fields (RANDSTRUCT),
+	 * recurse into it */
+	for (i = 0; i < vlen; i++) {
+		const struct btf_type *mt;
+		u32 toff;
+		u32 tsz;
+		u32 ttype;
+
+		if (ctx_str(ctx, m[i].name_off)[0])
+			continue;
+		ttype = m[i].type;
+		mt = ctx_type(ctx, ttype);
+		if (!mt)
+			continue;
+		kind = BTF_INFO_KIND(mt->info);
+		if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
+			continue;
+		ret = ti_member_lookup(ctx, ttype, member, NULL, &toff, &tsz,
+				       depth + 1);
+		if (ret)
+			continue;
+		if (BTF_INFO_KFLAG(t->info)) {
+			*bit_off = BTF_MEMBER_BIT_OFF(m[i].offset) + toff;
+			*bit_sz = BTF_MEMBER_BIT_SZ(m[i].offset);
+		} else {
+			*bit_off = m[i].offset + toff;
+			*bit_sz = tsz;
+		}
+		if (type_out)
+			*type_out = ttype;
+		return 0;
+	}
+
+#ifdef CONFIG_TI_DWARF
+	/* DWARF member table: names are always valid, offsets come from
+	 * the module's own compile-time layout */
+	if (ctx->dw) {
+		const char *sname = ctx_str(ctx, t->name_off);
+		u32 d_off;
+		u32 d_sz;
+
+		if (!ti_dw_member_off(ctx->dw, sname, member, &d_off, &d_sz)) {
+			*bit_off = d_off;
+			*bit_sz = d_sz;
+			if (type_out)
+				*type_out = 0;
+			return 0;
+		}
+	}
+#endif
 	return -ENOENT;
+}
+
+int ti_member_off(const struct ti_ctx *ctx, u32 id, const char *member,
+		  u32 *bit_off, u32 *bit_sz)
+{
+	int idx;
+
+	if (!ctx || !member || !bit_off || !bit_sz)
+		return -EINVAL;
+
+	idx = ti_reg_id_to_idx(id);
+	if (idx >= 0)
+		return ti_reg_member(idx, member, bit_off, bit_sz);
+
+	return ti_member_lookup(ctx, id, member, NULL, bit_off, bit_sz, 0);
 }
 
 int ti_member_info(const struct ti_ctx *ctx, u32 id, const char *member,
 		   u32 *type, u32 *bit_off, u32 *bit_sz)
 {
-	const struct btf_type *t;
-	const struct btf_member *m;
-	u32 kind;
-	u32 vlen;
-	u32 i;
-	int ret;
 	int idx;
 
 	if (!ctx || !member || !type || !bit_off || !bit_sz)
@@ -439,31 +829,5 @@ int ti_member_info(const struct ti_ctx *ctx, u32 id, const char *member,
 		return ti_reg_member(idx, member, bit_off, bit_sz);
 	}
 
-	ret = ti_follow(ctx, id, &id);
-	if (ret)
-		return ret;
-
-	t = ctx_type(ctx, id);
-	if (!t)
-		return -ENOENT;
-	kind = BTF_INFO_KIND(t->info);
-	if (kind != BTF_KIND_STRUCT && kind != BTF_KIND_UNION)
-		return -EINVAL;
-
-	vlen = BTF_INFO_VLEN(t->info);
-	m = (const struct btf_member *)(t + 1);
-	for (i = 0; i < vlen; i++) {
-		if (strcmp(ctx_str(ctx, m[i].name_off), member))
-			continue;
-		*type = m[i].type;
-		if (BTF_INFO_KFLAG(t->info)) {
-			*bit_off = BTF_MEMBER_BIT_OFF(m[i].offset);
-			*bit_sz = BTF_MEMBER_BIT_SZ(m[i].offset);
-		} else {
-			*bit_off = m[i].offset;
-			*bit_sz = 0;
-		}
-		return 0;
-	}
-	return -ENOENT;
+	return ti_member_lookup(ctx, id, member, type, bit_off, bit_sz, 0);
 }

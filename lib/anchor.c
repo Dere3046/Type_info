@@ -7,8 +7,8 @@
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/module.h>
+#include <linux/ctype.h>
 #include <linux/compiler_types.h>
-#include <linux/module.h>
 #include <linux/printk.h>
 #include <linux/export.h>
 #include <asm/processor.h>
@@ -352,6 +352,82 @@ static int mod_chain_has(const unsigned long *nodes, u32 n,
 	return 0;
 }
 
+static char ti_mod_name[MODULE_NAME_LEN];
+
+int ti_anchor_set_modname(const char *name)
+{
+	if (!name || !name[0])
+		return -EINVAL;
+	strscpy(ti_mod_name, name, sizeof(ti_mod_name));
+	return 0;
+}
+EXPORT_SYMBOL(ti_anchor_set_modname);
+
+static const char *ti_mod_self_name(unsigned long self, char *buf, u32 bufsz)
+{
+	u32 i;
+	char fb[MODULE_NAME_LEN];
+	bool have_fb = false;
+
+	if (ti_mod_name[0])
+		return ti_mod_name;
+
+	for (i = 0; i + 3 < TI_MOD_WIN; ) {
+		u32 len = 0;
+		char cand[MODULE_NAME_LEN];
+
+		if (!isalpha(((char *)self)[i]) &&
+		    ((char *)self)[i] != '_') {
+			i++;
+			continue;
+		}
+		while (i + len < TI_MOD_WIN &&
+		       len + 1 < MODULE_NAME_LEN &&
+		       ((char *)self)[i + len]) {
+			char c = ((char *)self)[i + len];
+
+			if (c < 0x20 || c > 0x7e)
+				break;
+			len++;
+		}
+		if (len < 3) {
+			i++;
+			continue;
+		}
+		memcpy(cand, (char *)self + i, len);
+		cand[len] = 0;
+		i += len;
+
+		if (!have_fb) {
+			strscpy(fb, cand, sizeof(fb));
+			have_fb = true;
+		}
+		if (ti_anchor_resolve) {
+			char sym[64];
+			int k;
+
+			for (k = 0; k < 2; k++) {
+				snprintf(sym, sizeof(sym), "%s_%s", cand,
+					 k ? "exit" : "init");
+				if (ti_anchor_resolve(sym)) {
+					strscpy(buf, cand, bufsz);
+					return buf;
+				}
+			}
+		} else {
+			strscpy(buf, cand, bufsz);
+			return buf;
+		}
+	}
+	/* no candidate passed symbol verification: fall back to the
+	 * first string found (static init symbols are stripped by LTO) */
+	if (have_fb) {
+		strscpy(buf, fb, bufsz);
+		return buf;
+	}
+	return NULL;
+}
+
 int ti_bootstrap_module(struct ti_module_offs *out)
 {
 	unsigned long head;
@@ -377,13 +453,23 @@ int ti_bootstrap_module(struct ti_module_offs *out)
 	self = (unsigned long)&__this_module;
 
 	/* name anchor: own module name string, NUL terminated */
-	for (i = 0; i + 16 <= TI_MOD_WIN; i += 8) {
-		if (memcmp((char *)self + i, "type_info", 9))
-			continue;
-		if (((char *)self)[i + 9])
-			continue;
-		out->off_name = i;
-		break;
+	{
+		char modname[MODULE_NAME_LEN];
+		const char *mn = ti_mod_self_name(self, modname,
+						 sizeof(modname));
+		u32 mnlen;
+
+		if (!mn)
+			return -ENOENT;
+		mnlen = strnlen(mn, MODULE_NAME_LEN);
+		for (i = 0; i + mnlen + 1 <= TI_MOD_WIN; i += 8) {
+			if (memcmp((char *)self + i, mn, mnlen))
+				continue;
+			if (((char *)self)[i + mnlen])
+				continue;
+			out->off_name = i;
+			break;
+		}
 	}
 	if (!out->off_name)
 		return -ENOENT;

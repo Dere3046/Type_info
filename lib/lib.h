@@ -10,6 +10,10 @@
 
 #include "btf.h"
 
+#ifdef CONFIG_TI_DWARF
+#include "dwarf.h"
+#endif
+
 struct ti_nsent {
 	u32 name_off;
 	u32 id;
@@ -21,6 +25,9 @@ struct ti_ctx {
 	const struct ti_ctx *base;
 	struct ti_nsent *name_map;
 	u32 name_cnt;
+#ifdef CONFIG_TI_DWARF
+	struct ti_dw *dw;
+#endif
 };
 
 int ti_ctx_init(struct ti_ctx *c, const void *blob, u32 size);
