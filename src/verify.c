@@ -564,7 +564,7 @@ static void verify_mod_cfg(const struct ti_ctx *c)
 		}
 
 #ifdef CONFIG_TI_DWARF
-		/* DWARF member names: valid on any build */
+		/* DWARF member names: fallback when BTF names shift */
 		ret = ti_member_off(c, cfg_id, "magic", &bit_off, &bit_sz);
 		CHECK(!ret && bit_off == 0 && !bit_sz,
 		      "[type_info] mod: dw magic off=%u sz=%u (ret=%d)\n",
