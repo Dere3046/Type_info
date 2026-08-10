@@ -52,15 +52,24 @@ static __nocfi struct module *ti_call_find_module(unsigned long fn,
 	return ((struct module *(*)(const char *))fn)(name);
 }
 
+static bool ti_ker_addr(unsigned long v)
+{
+	return v >= TASK_SIZE;
+}
+
 static __nocfi int ti_call_register_nb(unsigned long fn,
 				       struct notifier_block *nb)
 {
+	if (!ti_ker_addr(fn))
+		return -EINVAL;
 	return ((int (*)(struct notifier_block *))fn)(nb);
 }
 
 static __nocfi int ti_call_unregister_nb(unsigned long fn,
 					 struct notifier_block *nb)
 {
+	if (!ti_ker_addr(fn))
+		return -EINVAL;
 	return ((int (*)(struct notifier_block *))fn)(nb);
 }
 
@@ -396,9 +405,11 @@ int ti_init(struct ti_resolver *res)
 	ti_ready = true;
 
 	if (ti_mod_anchor || !ti_btf_available() || ti_mod_offs_init()) {
+#ifndef TI_NO_MOD_ANCHOR
 		memset(&ti_m_offs, 0, sizeof(ti_m_offs));
 		if (ti_bootstrap_module(&ti_m_offs))
 			pr_warn("[type_info] module anchor bootstrap failed\n");
+#endif
 	}
 	if (ti_m_offs.off_list && ti_m_offs.off_name)
 		ti_m_offs_ok = true;
