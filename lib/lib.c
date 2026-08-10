@@ -404,13 +404,13 @@ int ti_init(struct ti_resolver *res)
 	}
 	ti_ready = true;
 
+#ifdef TI_MOD_ANCHOR
 	if (ti_mod_anchor || !ti_btf_available() || ti_mod_offs_init()) {
-#ifndef TI_NO_MOD_ANCHOR
 		memset(&ti_m_offs, 0, sizeof(ti_m_offs));
 		if (ti_bootstrap_module(&ti_m_offs))
 			pr_warn("[type_info] module anchor bootstrap failed\n");
-#endif
 	}
+#endif
 	if (ti_m_offs.off_list && ti_m_offs.off_name)
 		ti_m_offs_ok = true;
 

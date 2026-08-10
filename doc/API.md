@@ -319,11 +319,13 @@ TI_DWARF=1: capture module DWARF member names (default off)
 TI_DWARF_EXPORT=1: also export the DWARF functions (implies TI_DWARF,
 default off)
 
-TI_NO_MOD_ANCHOR=1: never run the struct module anchor bootstrap
+TI_MOD_ANCHOR=1: enable the struct module anchor bootstrap
 (default off). the module list scan walks every loaded module and
-is unsafe on devices with many vendor modules; consumers that only
-need vmlinux layout should set this. module offsets then come from
-BTF only (ti_mod_offs_init), module BTF capture is disabled.
+is unsafe on devices with many vendor modules, so it is disabled
+by default. consumers that need module offsets without BTF (or
+want the anchor as a fallback) opt in; module offsets otherwise
+come from BTF only (ti_mod_offs_init), module BTF capture needs
+the anchor.
 
 ## Limitations
 
