@@ -35,4 +35,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: type_info-${{ matrix.kmi }}
-          path: type_info.ko
+          path: out/type_info.ko
