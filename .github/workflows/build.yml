@@ -27,10 +27,9 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch KallRecon
+      - name: Fetch deps
         run: |
-          git clone https://github.com/Dere3046/KallRecon.git kallrecon
-          git -C kallrecon checkout 63163fd477897fad97639f5ebca77af655499add
+          ./scripts/fetch-deps.sh
       - name: Build
         run: make
       - uses: actions/upload-artifact@v4
