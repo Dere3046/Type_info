@@ -1,5 +1,5 @@
 obj-m := type_info.o
-type_info-objs := lib/port.o lib/slide.o lib/btf.o lib/query.o lib/reg.o lib/lib.o lib/anchor.o lib/dwarf.o src/main.o src/verify.o deps/KallRecon/lib/core.o deps/KallRecon/lib/slide.o deps/KallRecon/lib/anchor.o
+type_info-objs := lib/port.o lib/slide.o lib/btf.o lib/query.o lib/reg.o lib/lib.o lib/anchor.o lib/dwarf.o src/main.o src/verify.o deps/KallRecon/lib/core.o deps/KallRecon/lib/anchor.o
 
 ccflags-y += -std=gnu11
 ccflags-y += -Wno-declaration-after-statement
