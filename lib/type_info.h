@@ -36,6 +36,7 @@ struct ti_module {
 int ti_init(struct ti_resolver *res);
 void ti_exit(void);
 struct ti_ctx *ti_base(void);
+bool ti_ready(void);
 bool ti_btf_available(void);
 u32 ti_type_count(void);
 

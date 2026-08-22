@@ -32,7 +32,7 @@ struct ti_mod_ent {
 
 static struct ti_resolver ti_res;
 static struct ti_ctx ti_base_ctx;
-static bool ti_ready;
+static bool ti_ready_flag;
 
 static struct mutex ti_mod_lock;
 static struct notifier_block ti_mod_nb;
@@ -78,16 +78,21 @@ struct ti_ctx *ti_base(void)
 	return &ti_base_ctx;
 }
 
+bool ti_ready(void)
+{
+	return ti_ready_flag;
+}
+
 u32 ti_type_count(void)
 {
-	if (!ti_ready)
+	if (!ti_ready_flag)
 		return 0;
 	return ti_base_ctx.cur.type_cnt;
 }
 
 bool ti_btf_available(void)
 {
-	return ti_ready && ti_base_ctx.cur.type_cnt != 0;
+	return ti_ready_flag && ti_base_ctx.cur.type_cnt != 0;
 }
 
 static void *ti_blob_dup(const void *src, u32 size)
@@ -402,7 +407,7 @@ int ti_init(struct ti_resolver *res)
 	} else {
 		pr_info("[type_info] vmlinux btf unavailable\n");
 	}
-	ti_ready = true;
+	ti_ready_flag = true;
 
 #ifdef TI_MOD_ANCHOR
 	if (ti_mod_anchor || !ti_btf_available() || ti_mod_offs_init()) {
@@ -430,7 +435,7 @@ void ti_exit(void)
 {
 	u32 i;
 
-	if (!ti_ready)
+	if (!ti_ready_flag)
 		return;
 	if (ti_nb_unregister)
 		ti_call_unregister_nb(ti_nb_unregister, &ti_mod_nb);
@@ -445,7 +450,7 @@ void ti_exit(void)
 	vfree(ti_base_ctx.name_map);
 	btf_close(&ti_base_ctx.cur);
 	memset(&ti_base_ctx, 0, sizeof(ti_base_ctx));
-	ti_ready = false;
+	ti_ready_flag = false;
 }
 
 int ti_mod_lookup(const char *name, struct ti_ctx **out)
