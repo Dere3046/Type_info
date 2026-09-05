@@ -102,6 +102,13 @@ static struct ti_ctx *synth_base(void **blobp, u32 *sizep, u32 *id_offp)
 	u32 off_c;
 	u32 off_myint;
 	u32 off_arr4;
+	u32 off_fn;
+	u32 off_arg1;
+	u32 off_arg2;
+	u32 off_enum;
+	u32 off_one;
+	u32 off_two;
+	u32 off_three;
 	u32 str_len;
 	u32 type_off;
 	u32 type_len;
@@ -130,6 +137,13 @@ static struct ti_ctx *synth_base(void **blobp, u32 *sizep, u32 *id_offp)
 	off_c = sb_str(&s, "c");
 	off_myint = sb_str(&s, "myint");
 	off_arr4 = sb_str(&s, "arr4");
+	off_fn = sb_str(&s, "syn_fn");
+	off_arg1 = sb_str(&s, "arg1");
+	off_arg2 = sb_str(&s, "arg2");
+	off_enum = sb_str(&s, "syn_enum");
+	off_one = sb_str(&s, "ONE");
+	off_two = sb_str(&s, "TWO");
+	off_three = sb_str(&s, "THREE");
 	str_len = s.len - s.str_base;
 
 	type_off = s.len;
@@ -156,13 +170,39 @@ static struct ti_ctx *synth_base(void **blobp, u32 *sizep, u32 *id_offp)
 	arr.nelems = 4;
 	sb_type(&s, off_arr4, T_INFO(BTF_KIND_ARRAY, 0, 0), 0, &arr,
 		sizeof(arr));
+	{
+		struct {
+			u32 name_off;
+			u32 type;
+		} fpar[2];
+		struct {
+			u32 name_off;
+			s32 val;
+		} fenu[3];
+
+		fpar[0].name_off = off_arg1;
+		fpar[0].type = 1;
+		fpar[1].name_off = off_arg2;
+		fpar[1].type = 1;
+		sb_type(&s, 0, T_INFO(BTF_KIND_FUNC_PROTO, 2, 0), 1, fpar,
+			sizeof(fpar));
+		sb_type(&s, off_fn, T_INFO(BTF_KIND_FUNC, 0, 0), 6, NULL, 0);
+		fenu[0].name_off = off_one;
+		fenu[0].val = 10;
+		fenu[1].name_off = off_two;
+		fenu[1].val = 20;
+		fenu[2].name_off = off_three;
+		fenu[2].val = 30;
+		sb_type(&s, off_enum, T_INFO(BTF_KIND_ENUM, 3, 0), 4, fenu,
+			sizeof(fenu));
+	}
 	type_len = s.len - type_off;
 
 	sb_hdr(&s, type_off - 24, type_len, str_len);
 
 	*blobp = s.p;
 	*sizep = s.len;
-	*id_offp = 5;
+	*id_offp = 8;
 	if (ti_ctx_open(s.p, s.len, &c)) {
 		vfree(s.p);
 		*blobp = NULL;
@@ -229,6 +269,8 @@ static struct ti_ctx *synth_split(const struct ti_ctx *base, u32 id_off,
 	return c;
 }
 
+static void synth_check_func_enum(const struct ti_ctx *c);
+
 static void synth_check_base(const struct ti_ctx *c)
 {
 	u32 id;
@@ -258,7 +300,68 @@ static void synth_check_base(const struct ti_ctx *c)
 	      "[type_info] synth: arr4 not found\n");
 	CHECK(ti_type_size(c, id) == 16, "[type_info] synth: arr4 size=%u\n",
 	      ti_type_size(c, id));
+#ifdef CONFIG_TI_FUNC
+	synth_check_func_enum(c);
+#endif
 }
+
+#ifdef CONFIG_TI_FUNC
+static void synth_check_func_enum(const struct ti_ctx *c)
+{
+	u32 id;
+	u32 ret;
+	u32 n;
+	u32 ptype;
+	const char *pname;
+	s64 val;
+
+	CHECK(!ti_type_by_name(c, "syn_fn", BIT(BTF_KIND_FUNC), &id),
+	      "[type_info] synth: syn_fn not found\n");
+	CHECK(!ti_func_proto(c, id, &ret, &n) && ret == 1 && n == 2,
+	      "[type_info] synth: fn ret=%u n=%u\n", ret, n);
+	CHECK(!ti_func_param(c, id, 0, &pname, &ptype) &&
+	      ptype == 1 && pname && !strcmp(pname, "arg1"),
+	      "[type_info] synth: fn p0 type=%u name=%s\n", ptype,
+	      pname ? pname : "?");
+	CHECK(!ti_func_param(c, id, 1, &pname, &ptype) &&
+	      ptype == 1 && pname && !strcmp(pname, "arg2"),
+	      "[type_info] synth: fn p1 type=%u name=%s\n", ptype,
+	      pname ? pname : "?");
+	CHECK(ti_func_param(c, id, 2, NULL, NULL) == -ENOENT,
+	      "[type_info] synth: fn p2 should be ENOENT\n");
+
+	CHECK(!ti_type_by_name(c, "syn_enum", BIT(BTF_KIND_ENUM), &id),
+	      "[type_info] synth: syn_enum not found\n");
+	CHECK(!ti_enum_val(c, id, "ONE", &val) && val == 10,
+	      "[type_info] synth: enum ONE=%lld\n", val);
+	CHECK(!ti_enum_val(c, id, "THREE", &val) && val == 30,
+	      "[type_info] synth: enum THREE=%lld\n", val);
+	CHECK(ti_enum_val(c, id, "NOPE", &val) == -ENOENT,
+	      "[type_info] synth: enum NOPE should be ENOENT\n");
+	CHECK(!ti_enum_at(c, id, 1, &pname, &val) && val == 20 &&
+	      pname && !strcmp(pname, "TWO"),
+	      "[type_info] synth: enum at1=%lld name=%s\n", val,
+	      pname ? pname : "?");
+	CHECK(ti_enum_at(c, id, 3, NULL, NULL) == -ENOENT,
+	      "[type_info] synth: enum at3 should be ENOENT\n");
+	{
+		struct ti_type_raw r;
+		int rret;
+
+		rret = ti_type_raw(c, id, &r);
+		CHECK(!rret && r.kind == BTF_KIND_ENUM && r.vlen == 3 &&
+		      r.data_len >= sizeof(struct btf_enum) * 3,
+		      "[type_info] synth: raw enum kind=%u vlen=%u len=%u\n",
+		      r.kind, r.vlen, r.data_len);
+		rret = ti_type_by_name(c, "s_bits", BIT(BTF_KIND_STRUCT), &id);
+		CHECK(!rret, "[type_info] synth: s_bits raw not found\n");
+		rret = ti_type_raw(c, id, &r);
+		CHECK(!rret && r.kind == BTF_KIND_STRUCT && r.vlen == 3,
+		      "[type_info] synth: raw struct kind=%u vlen=%u\n",
+		      r.kind, r.vlen);
+	}
+}
+#endif
 
 static void synth_check_split(const struct ti_ctx *c)
 {
@@ -727,7 +830,6 @@ static void ti_verify_reg(void)
 	int n;
 	int i;
 
-	vfails = 0;
 	ret = ti_type_by_name(ti_base(), "ti_test_cfg", BIT(BTF_KIND_STRUCT),
 			      &id);
 	if (ret) {
@@ -775,17 +877,6 @@ static void ti_verify_reg(void)
 
 	pr_info("[type_info] reg verify done, %d fail%s\n", vfails,
 		vfails == 1 ? "" : "s");
-}
-
-static void ti_verify_captured(const struct ti_ctx *mc)
-{
-	vfails = 0;
-	if (strcmp(mc->name, "testmod"))
-		return;
-	verify_mod_cfg(mc);
-	pr_info("[type_info] mod verify done, %d fail%s\n", vfails,
-		vfails == 1 ? "" : "s");
-	verify_mod_enum();
 }
 
 extern int ti_cur_pid;

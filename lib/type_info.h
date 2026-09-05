@@ -55,6 +55,27 @@ int ti_member_count(const struct ti_ctx *ctx, u32 id);
 int ti_member_at(const struct ti_ctx *ctx, u32 id, u32 idx,
 		 const char **name, u32 *type, u32 *bit_off, u32 *bit_sz);
 
+#ifdef CONFIG_TI_FUNC
+struct ti_type_raw {
+	u32 kind;
+	u32 vlen;
+	u32 type;
+	const char *name;
+	const void *data;
+	u32 data_len;
+};
+
+int ti_func_proto(const struct ti_ctx *ctx, u32 func_id,
+		  u32 *ret_type, u32 *nparams);
+int ti_func_param(const struct ti_ctx *ctx, u32 func_id, u32 idx,
+		  const char **name, u32 *type);
+int ti_enum_at(const struct ti_ctx *ctx, u32 id, u32 idx,
+	       const char **name, s64 *val);
+int ti_enum_val(const struct ti_ctx *ctx, u32 id, const char *name,
+		s64 *val);
+int ti_type_raw(const struct ti_ctx *ctx, u32 id, struct ti_type_raw *out);
+#endif
+
 int ti_mod_lookup(const char *name, struct ti_ctx **out);
 int ti_mod_enum(int (*cb)(const struct ti_module *m, void *arg), void *arg);
 

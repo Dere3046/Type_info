@@ -831,3 +831,174 @@ int ti_member_info(const struct ti_ctx *ctx, u32 id, const char *member,
 
 	return ti_member_lookup(ctx, id, member, type, bit_off, bit_sz, 0);
 }
+
+#ifdef CONFIG_TI_FUNC
+
+static const struct btf_cursor *ctx_cur_own(const struct ti_ctx *c, u32 id)
+{
+	if (id <= c->cur.id_off) {
+		if (!c->base)
+			return NULL;
+		return ctx_cur_own(c->base, id);
+	}
+	return &c->cur;
+}
+
+static int ti_func_proto_id(const struct ti_ctx *ctx, u32 id, u32 *proto_id)
+{
+	const struct btf_type *t;
+	u32 kind;
+
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	if (kind == BTF_KIND_FUNC_PROTO) {
+		*proto_id = id;
+		return 0;
+	}
+	if (kind != BTF_KIND_FUNC)
+		return -EINVAL;
+	*proto_id = t->type;
+	t = ctx_type(ctx, *proto_id);
+	if (!t || BTF_INFO_KIND(t->info) != BTF_KIND_FUNC_PROTO)
+		return -EINVAL;
+	return 0;
+}
+
+int ti_func_proto(const struct ti_ctx *ctx, u32 func_id, u32 *ret_type,
+		  u32 *nparams)
+{
+	const struct btf_type *t;
+	u32 pid;
+	int ret;
+
+	if (!ctx || !ret_type || !nparams)
+		return -EINVAL;
+	ret = ti_func_proto_id(ctx, func_id, &pid);
+	if (ret)
+		return ret;
+	t = ctx_type(ctx, pid);
+	*ret_type = t->type;
+	*nparams = BTF_INFO_VLEN(t->info);
+	return 0;
+}
+
+int ti_func_param(const struct ti_ctx *ctx, u32 func_id, u32 idx,
+		  const char **name, u32 *type)
+{
+	const struct btf_type *t;
+	const struct btf_param *p;
+	u32 pid;
+	u32 vlen;
+	int ret;
+
+	if (!ctx)
+		return -EINVAL;
+	ret = ti_func_proto_id(ctx, func_id, &pid);
+	if (ret)
+		return ret;
+	t = ctx_type(ctx, pid);
+	vlen = BTF_INFO_VLEN(t->info);
+	if (idx >= vlen)
+		return -ENOENT;
+	p = (const struct btf_param *)(t + 1);
+	if (name)
+		*name = ctx_str(ctx, p[idx].name_off);
+	if (type)
+		*type = p[idx].type;
+	return 0;
+}
+
+int ti_enum_at(const struct ti_ctx *ctx, u32 id, u32 idx,
+	       const char **name, s64 *val)
+{
+	const struct btf_type *t;
+	u32 kind;
+	u32 vlen;
+
+	if (!ctx)
+		return -EINVAL;
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	vlen = BTF_INFO_VLEN(t->info);
+	if (kind == BTF_KIND_ENUM64) {
+		const struct btf_enum64 *e = (const struct btf_enum64 *)(t + 1);
+
+		if (idx >= vlen)
+			return -ENOENT;
+		if (name)
+			*name = ctx_str(ctx, e[idx].name_off);
+		if (val)
+			*val = (s64)((u64)e[idx].val_hi32 << 32 |
+				    e[idx].val_lo32);
+		return 0;
+	}
+	if (kind != BTF_KIND_ENUM)
+		return -EINVAL;
+	{
+		const struct btf_enum *e = (const struct btf_enum *)(t + 1);
+
+		if (idx >= vlen)
+			return -ENOENT;
+		if (name)
+			*name = ctx_str(ctx, e[idx].name_off);
+		if (val)
+			*val = e[idx].val;
+	}
+	return 0;
+}
+
+int ti_enum_val(const struct ti_ctx *ctx, u32 id, const char *name,
+		s64 *val)
+{
+	u32 i;
+
+	if (!ctx || !name || !val)
+		return -EINVAL;
+	if (!ctx_type(ctx, id))
+		return -ENOENT;
+	for (i = 0;; i++) {
+		const char *mn;
+		s64 mv;
+
+		if (ti_enum_at(ctx, id, i, &mn, &mv))
+			break;
+		if (!strcmp(name, mn)) {
+			*val = mv;
+			return 0;
+		}
+	}
+	return -ENOENT;
+}
+
+int ti_type_raw(const struct ti_ctx *ctx, u32 id, struct ti_type_raw *out)
+{
+	const struct btf_cursor *cur;
+	const struct btf_type *t;
+	const u8 *end;
+	u32 kind;
+
+	if (!ctx || !out)
+		return -EINVAL;
+	t = ctx_type(ctx, id);
+	if (!t)
+		return -ENOENT;
+	cur = ctx_cur_own(ctx, id);
+	if (!cur)
+		return -ENOENT;
+	kind = BTF_INFO_KIND(t->info);
+	out->kind = kind;
+	out->vlen = BTF_INFO_VLEN(t->info);
+	out->type = t->type;
+	out->name = ctx_str(ctx, t->name_off);
+	out->data = (const void *)(t + 1);
+	end = (const u8 *)cur->blob + cur->hdr_len + cur->type_off +
+	      cur->type_len;
+	out->data_len = (const u8 *)out->data < end ?
+			(u32)(end - (const u8 *)out->data) : 0;
+	return 0;
+}
+#endif

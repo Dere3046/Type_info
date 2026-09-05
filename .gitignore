@@ -16,3 +16,4 @@ out/
 kallrecon/
 .ddk-version
 .sdk/
+deps/

@@ -120,6 +120,57 @@ full struct layout (member names and offsets).
 synthetic ids >= 0x80000000 (TI_REG_ID_BASE) resolve to the registry;
 all query functions handle them.
 
+## Function and enum query (CONFIG_TI_FUNC)
+
+kernel functions and enums are BTF types like any other. find a
+function by name with ti_type_by_name and kind_mask
+BIT(BTF_KIND_FUNC), then read its signature. kernel functions live
+in the vmlinux context, their names never shift, query them against
+ti_base(). enums work for BTF_KIND_ENUM and BTF_KIND_ENUM64.
+
+**int ti_func_proto(const struct ti_ctx *ctx, u32 func_id,
+u32 *ret_type, u32 *nparams)**
+
+read the return type id and the parameter count of a function.
+func_id may be a FUNC or FUNC_PROTO id, FUNC is followed
+automatically. the return type id resolves like any type id.
+
+**int ti_func_param(const struct ti_ctx *ctx, u32 func_id, u32 idx,
+const char **name, u32 *type)**
+
+read the idx-th parameter type and name. -ENOENT past the end.
+anonymous parameters have an empty name. pass NULL for name or type
+to skip it, both NULL is an existence check.
+
+**int ti_enum_at(const struct ti_ctx *ctx, u32 id, u32 idx,
+const char **name, s64 *val)**
+
+read the idx-th enum member. values are s64 for both ENUM and
+ENUM64. -ENOENT past the end.
+
+**int ti_enum_val(const struct ti_ctx *ctx, u32 id, const char *name,
+s64 *val)**
+
+find an enum member value by name.
+
+## Raw type access (CONFIG_TI_FUNC)
+
+**struct ti_type_raw { u32 kind; u32 vlen; u32 type; const char *name;
+const void *data; u32 data_len; }**
+
+one entry for any BTF kind. name is resolved through the string
+base, shifted names are handled. data points at the kind specific
+payload right after the type header (btf_member / btf_param /
+btf_enum64 / btf_array and so on), data_len is the remaining size so
+the caller can bound its parse.
+
+**int ti_type_raw(const struct ti_ctx *ctx, u32 id,
+struct ti_type_raw *out)**
+
+read any type as raw fields. parse data with the kernel UAPI
+structures from include/uapi/linux/btf.h. this is the escape hatch
+for kinds without a wrapper above.
+
 ## Feature query (CONFIG_TI_FEATURE)
 
 find a struct by its shape instead of its name. works when the name
@@ -311,6 +362,8 @@ otherwise vmlinux as base.
 TI_PUBLIC_ANCHOR=1: export the anchor scanning primitives (default off)
 
 TI_FEATURE=1: export ti_type_by_size and ti_type_by_seq (default off)
+
+TI_FUNC=1: function, enum and raw type query (default off)
 
 TI_REMAP=1: retry lookups against vmlinux (default on, TI_REMAP=0 off)
 

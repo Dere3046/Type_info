@@ -30,6 +30,10 @@ ifneq ($(TI_REMAP),0)
 ccflags-y += -DCONFIG_TI_REMAP
 endif
 
+ifeq ($(TI_FUNC),1)
+ccflags-y += -DCONFIG_TI_FUNC
+endif
+
 KDIR := $(KDIR)
 MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ODIR := $(MDIR)/out/$(VER)
