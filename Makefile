@@ -1,5 +1,5 @@
 obj-m := type_info.o
-type_info-objs := lib/port.o lib/slide.o lib/btf.o lib/query.o lib/reg.o lib/lib.o lib/anchor.o lib/dwarf.o src/main.o src/verify.o deps/KallRecon/lib/core.o deps/KallRecon/lib/anchor.o
+type_info-objs := lib/port.o lib/btf.o lib/query.o lib/reg.o lib/lib.o lib/anchor.o lib/dwarf.o src/main.o src/verify.o deps/KallRecon/lib/core.o deps/KallRecon/lib/anchor.o
 
 ccflags-y += -std=gnu11
 ccflags-y += -Wno-declaration-after-statement
@@ -43,9 +43,10 @@ $(info -- MDIR: $(MDIR))
 $(info -- ODIR: $(ODIR))
 
 all:
-	make -C $(KDIR) M=$(ODIR) src=$(MDIR) modules
+	mkdir -p $(ODIR)
+	make -C $(KDIR) M=$(ODIR) src=$(MDIR) srcroot=$(MDIR) modules
 clean:
-	make -C $(KDIR) M=$(ODIR) src=$(MDIR) clean
+	make -C $(KDIR) M=$(ODIR) src=$(MDIR) srcroot=$(MDIR) clean
 
 $(obj)/%.o: $(src)/%.c $(recordmcount_source) FORCE
 	$(call if_changed_rule,cc_o_c)

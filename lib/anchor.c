@@ -15,6 +15,7 @@
 
 #include "anchor.h"
 #include "port.h"
+#include "type_info.h"
 
 #define TI_TASK_WIN	0x2000
 #define TI_MM_WIN	0x1000
@@ -108,6 +109,11 @@ void ti_anchor_init(unsigned long (*resolve)(const char *name))
 	ti_anchor_resolve = resolve;
 }
 
+static __nocfi unsigned long ti_resolve(const char *name)
+{
+	return ti_anchor_resolve(name);
+}
+
 static __nocfi void *ti_call_find_task(unsigned long fn, pid_t pid)
 {
 	return ((void *(*)(pid_t))fn)(pid);
@@ -140,10 +146,10 @@ static u32 pid_cross_verify(const void *cur, const struct ti_boot_args *args)
 
 	n1 = task_pidpair_cands(cur, args->pid, args->tgid, c1, TI_CAND_MAX);
 	if (ti_anchor_resolve)
-		it = ti_anchor_resolve("init_task");
+		it = ti_resolve("init_task");
 
 	if (ti_anchor_resolve && args->ref_pid) {
-		unsigned long fn = ti_anchor_resolve("find_task_by_vpid");
+		unsigned long fn = ti_resolve("find_task_by_vpid");
 
 		if (fn) {
 			void *ref = ti_call_find_task(fn, args->ref_pid);
@@ -409,7 +415,7 @@ static const char *ti_mod_self_name(unsigned long self, char *buf, u32 bufsz)
 			for (k = 0; k < 2; k++) {
 				snprintf(sym, sizeof(sym), "%s_%s", cand,
 					 k ? "exit" : "init");
-				if (ti_anchor_resolve(sym)) {
+				if (ti_resolve(sym)) {
 					strscpy(buf, cand, bufsz);
 					return buf;
 				}
@@ -442,7 +448,7 @@ int ti_bootstrap_module(struct ti_module_offs *out)
 	if (!ti_anchor_resolve)
 		return -ENOENT;
 
-	head = ti_anchor_resolve("modules");
+	head = ti_resolve("modules");
 	if (!head)
 		return -ENOENT;
 	if (mod_chain_nodes(head, nodes, TI_MOD_NODES, &ncnt))

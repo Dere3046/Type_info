@@ -930,6 +930,8 @@ static void verify_anchor(void)
 	      offsetof(struct task_struct, mm));
 }
 
+void ti_verify_ti(void);
+
 void ti_verify_ti(void)
 {
 	struct ti_ctx *mc;
