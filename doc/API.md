@@ -277,6 +277,11 @@ same, scanning backwards.
 
 **int ti_anchor_set_modname(const char *name)**
 
+the symbol is not exported by default. a project that links the library in carries
+the function itself and needs no export, so the definition is the whole surface;
+a consumer that loads this module separately and resolves the name at run time
+builds with `TI_MODNAME=1`, which adds `EXPORT_SYMBOL(ti_anchor_set_modname)`.
+
 pin the module name used by the struct module anchor. by default the
 anchor scans the module mirror for a name and checks it against
 init/exit symbols. call this before ti_init to force a known name.

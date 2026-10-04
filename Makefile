@@ -34,6 +34,13 @@ ifeq ($(TI_FUNC),1)
 ccflags-y += -DCONFIG_TI_FUNC
 endif
 
+# the modname setter is only worth exporting when a consumer loads this module
+# separately and resolves the symbol at run time. every project that links the
+# library in carries the function itself, so the default is not to export it
+ifeq ($(TI_MODNAME),1)
+ccflags-y += -DCONFIG_TI_MODNAME
+endif
+
 KDIR := $(KDIR)
 MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ODIR := $(MDIR)/out/$(VER)

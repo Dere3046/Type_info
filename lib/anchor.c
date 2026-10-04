@@ -367,7 +367,9 @@ int ti_anchor_set_modname(const char *name)
 	strscpy(ti_mod_name, name, sizeof(ti_mod_name));
 	return 0;
 }
+#ifdef CONFIG_TI_MODNAME
 EXPORT_SYMBOL(ti_anchor_set_modname);
+#endif
 
 static const char *ti_mod_self_name(unsigned long self, char *buf, u32 bufsz)
 {
