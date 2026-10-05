@@ -41,6 +41,13 @@ ifeq ($(TI_MODNAME),1)
 ccflags-y += -DCONFIG_TI_MODNAME
 endif
 
+# the cooperative registration entry points only need to be visible to a consumer
+# that loads this module separately. a project that links the library in calls the
+# functions directly, so the default is not to export them
+ifeq ($(TI_REG),1)
+ccflags-y += -DCONFIG_TI_REG
+endif
+
 KDIR := $(KDIR)
 MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ODIR := $(MDIR)/out/$(VER)

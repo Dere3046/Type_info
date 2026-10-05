@@ -216,6 +216,10 @@ one member description. use compile-time offsetof(x) * 8 for bit_off.
 **int ti_reg_struct(const char *name, u32 size,
 const struct ti_member_desc *members, u32 n)**
 
+neither entry point is exported by default: a project that links the library in
+calls them directly, so the definition is the whole surface. a consumer that loads
+this module separately and resolves the names at run time builds with `TI_REG=1`,
+which adds `EXPORT_SYMBOL` for both.
 register a struct layout. exported, callable from any LKM. 0 on
 success, -EINVAL on bad input, -ENOSPC when the table is full.
 registered structs are found by ti_type_by_name and all query

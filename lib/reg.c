@@ -159,10 +159,14 @@ int ti_reg_struct(const char *name, u32 size,
 
 	return ret < 0 ? ret : 0;
 }
+#ifdef CONFIG_TI_REG
 EXPORT_SYMBOL(ti_reg_struct);
+#endif
 
 void ti_unreg_struct(const char *name)
 {
 	ti_reg_del(name);
 }
+#ifdef CONFIG_TI_REG
 EXPORT_SYMBOL(ti_unreg_struct);
+#endif
