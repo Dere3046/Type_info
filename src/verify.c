@@ -956,4 +956,6 @@ void ti_verify_ti(void)
 	pr_info("[type_info] verify done, %d fail%s\n", vfails,
 		vfails == 1 ? "" : "s");
 }
+#ifdef CONFIG_TI_VERIFY
 EXPORT_SYMBOL(ti_verify_ti);
+#endif

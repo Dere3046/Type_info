@@ -48,6 +48,12 @@ ifeq ($(TI_REG),1)
 ccflags-y += -DCONFIG_TI_REG
 endif
 
+# the self test is called by the library itself, so its entry point is not part of
+# the surface either unless someone outside wants to trigger it
+ifeq ($(TI_VERIFY),1)
+ccflags-y += -DCONFIG_TI_VERIFY
+endif
+
 KDIR := $(KDIR)
 MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ODIR := $(MDIR)/out/$(VER)
