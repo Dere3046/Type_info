@@ -46,6 +46,10 @@ registry.
 
 **void ti_verify_ti(void)**
 
+the self test has no export by default. the library triggers it itself, so a build
+that only links the library in keeps the whole surface internal; a build that wants
+to trigger it from outside adds `TI_VERIFY=1`.
+
 run the full self test: synthetic BTF, kernel layout against
 compile-time offsets, anchor offsets, module config, registry and
 module enum. prints fail counts, callers check the log. exported,
