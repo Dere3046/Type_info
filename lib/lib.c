@@ -289,15 +289,50 @@ static int ti_mod_capture(struct module *mod)
 	return 0;
 }
 
+/*
+ * the offsets are used on other modules, so they have to describe the module that
+ * is running this code first. a field read at the wrong offset is a wild pointer
+ * inside the notifier chain, which is what a 6.18 kernel made of the old guess, so
+ * the chain is only joined when the layout answers for this module by name
+ */
+static bool ti_mod_offs_trusted(void)
+{
+	struct module *self = THIS_MODULE;
+	const char *name;
+	u32 i;
+
+	if (!ti_m_offs_ok || !self)
+		return false;
+	/* a field past a page cannot be inside a struct module */
+	if (ti_m_offs.off_name < 8 || ti_m_offs.off_name > 0x1000)
+		return false;
+	if (ti_m_offs.off_list < 8 || ti_m_offs.off_list > 0x1000)
+		return false;
+	name = (const char *)self + ti_m_offs.off_name;
+	for (i = 0; i < MODULE_NAME_LEN; i++) {
+		u8 c = name[i];
+
+		if (!c)
+			break;
+		if (c < 0x20 || c > 0x7e)
+			return false;
+	}
+	if (!i || i >= MODULE_NAME_LEN)
+		return false;
+	return !strcmp(name, KBUILD_MODNAME);
+}
+
 static int ti_mod_notify(struct notifier_block *nb, unsigned long ev,
 			 void *data)
 {
 	struct module *mod = data;
 
+	if (!mod || !ti_m_offs_ok)
+		return NOTIFY_DONE;
 	if (ev == MODULE_STATE_COMING)
 		ti_mod_capture(mod);
 	else if (ev == MODULE_STATE_GOING)
-		ti_mod_ent_del(mod->name);
+		ti_mod_ent_del((const char *)mod + ti_m_offs.off_name);
 	return NOTIFY_DONE;
 }
 
@@ -421,7 +456,10 @@ int ti_init(struct ti_resolver *res)
 
 	ti_nb_register = ti_res.name_to_addr("register_module_notifier");
 	ti_nb_unregister = ti_res.name_to_addr("unregister_module_notifier");
-	if (ti_nb_register && ti_nb_unregister) {
+	if (!ti_mod_offs_trusted()) {
+		pr_info("[type_info] module layout untrusted, "
+			"module btf disabled\n");
+	} else if (ti_nb_register && ti_nb_unregister) {
 		if (ti_call_register_nb(ti_nb_register, &ti_mod_nb))
 			pr_warn("[type_info] module notifier register failed\n");
 	} else {
